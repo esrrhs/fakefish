@@ -1,8 +1,10 @@
 # FakeFish
 
-基于 [esrrhs/fakelua](https://github.com/esrrhs/fakelua) 的简易网页 2D PVP 游戏：**金币球 · 大鱼吃小鱼**。
+用于验证 [esrrhs/fakelua](https://github.com/esrrhs/fakelua) 能力的 **demo 游戏**：在真实可玩场景里串起 FakeLua 的脚本运行时、`runtime.tick` 事件泵、WebSocket、HTTP、MySQL、JSON、定时器与配置解析等能力。
 
-服务端为单线程 FakeLua 程序，全部玩法逻辑在后端；前端只做表现与输入上报。账号数据存 MySQL，客户端通过 WebSocket 与服务器通信。
+玩法是简易网页 2D PVP：**金币球 · 大鱼吃小鱼**。服务端为单线程 FakeLua 程序，全部玩法逻辑在后端；前端只做表现与输入上报。账号数据存 MySQL，客户端通过 WebSocket 与服务器通信。
+
+> 本仓库是演示与能力验证项目，不是面向上线运营的完整游戏产品。
 
 ---
 
@@ -16,6 +18,7 @@
 
 | 目标 | 非目标（本期不做） |
 |------|-------------------|
+| 用可玩 demo 验证 FakeLua 端到端能力 | 商业化运营、完整内容生态 |
 | 可登录/注册的轻量 PVP 沙盒 | 排行榜、公会、商城、皮肤 |
 | 权威服务端：移动、碰撞、吃球、金币结算 | 客户端预测、插值物理权威 |
 | MySQL 持久化账号与金币 | 多进程/多线程分片、跨服 |
@@ -247,5 +250,5 @@ cp config.example.yaml config.yaml
 
 ## 许可与依赖
 
+- 本仓库：[MIT License](LICENSE)
 - 运行时与标准库：[esrrhs/fakelua](https://github.com/esrrhs/fakelua)
-- 本仓库业务代码许可待定（默认可随上游习惯采用 MIT）
