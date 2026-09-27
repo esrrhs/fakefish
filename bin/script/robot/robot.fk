@@ -1,3 +1,0 @@
-include "../NetMsg.fk"
-include "../ServerNetMsg.fk"
-include "game_handle.fk"

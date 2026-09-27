@@ -1,0 +1,22 @@
+# Build / IDE
+build/
+cmake-build-*/
+.vscode/
+.idea/
+*.o
+*.a
+*.so
+*.exe
+
+# Runtime
+config.yaml
+*.log
+log.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / local
+.env
+*.pem
