@@ -1,6 +1,0 @@
-
-func on_CS_REQ_LOGIN(human, recvmsg, sendmsg)
-
-	print("haha")
-
-end

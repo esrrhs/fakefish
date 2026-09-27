@@ -1,6 +1,0 @@
-
-func on_SC_RES_LOGIN(human, recvmsg, sendmsg)
-
-	print("haha")
-
-end
