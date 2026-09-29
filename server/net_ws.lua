@@ -160,13 +160,16 @@ function notify_eat(eater_id, victim_id, gold)
 end
 
 function notify_died(victim_id, gold, x, y)
-    local connid = World.get_conn_by_pid(victim_id)
-    if connid ~= nil then
-        send(connid, {
+    if ws_server_obj == nil then return end
+    local all_players = World.get_all_players()
+    local p = all_players[victim_id]
+    if p ~= nil and p.connid ~= nil then
+        local json_str = json.encode({
             type = "you_died",
             gold = gold,
             x = x,
             y = y
         })
+        ws_server_obj:send(p.connid, json_str)
     end
 end
