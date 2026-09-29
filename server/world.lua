@@ -26,7 +26,6 @@ local pending_responses = nil
 -- 入队待发送消息（供 NetWs.on_event 回调调用）
 function enqueue_response(connid, tbl)
     table.insert(pending_responses, { connid = connid, tbl = tbl })
-    print("[World] enqueue_response: connid=" .. tostring(connid) .. ", type=" .. tostring(tbl["type"]) .. ", queue_size=" .. tostring(#pending_responses))
 end
 
 -- 取出并清空待发送队列（供 NetWs.flush_pending 主循环调用）
@@ -34,7 +33,6 @@ function drain_responses()
     if #pending_responses == 0 then return nil end
     local result = pending_responses
     pending_responses = {}
-    print("[World] drain_responses: returning " .. tostring(#result) .. " responses")
     return result
 end
 

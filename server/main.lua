@@ -51,7 +51,10 @@ function start(config_path)
         -- 统一事件泵推进：驱动 socket IO、定时器、MySQL 等
         runtime.tick()
 
-        -- flush 回调中入队的消息（login_ok 等），在 tick 之外发送避免 reentrancy
+        -- 发送登录响应（通过 p.connid，与 broadcast 同路径，确保跨平台一致）
+        NetWs.flush_login_responses()
+
+        -- flush 其他暂存消息（register_fail, pong 等）
         NetWs.flush_pending()
 
         -- 物理与规则计算
