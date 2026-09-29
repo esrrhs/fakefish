@@ -130,6 +130,10 @@ jobs:
           echo "=== Running HTTP API E2E Test ==="
           node test_api.js
 
+          # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
+          echo "=== Running Powerup E2E Test ==="
+          node test_powerup.js
+
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
           sleep 1
@@ -264,6 +268,10 @@ jobs:
           # Run HTTP JSON API test (rank/stats/traversal, bot-free world)
           echo "=== Running HTTP API E2E Test ==="
           node test_api.js
+
+          # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
+          echo "=== Running Powerup E2E Test ==="
+          node test_powerup.js
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true

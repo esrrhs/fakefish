@@ -158,14 +158,24 @@ function broadcast(tbl)
 end
 
 function broadcast_snapshot()
-    local snap, foods = World.get_snapshot()
+    local snap, foods, powerups = World.get_snapshot()
     if #snap == 0 then return end
     local msg = {
         type = "snapshot",
         players = snap,
-        foods = foods
+        foods = foods,
+        powerups = powerups
     }
     broadcast(msg)
+end
+
+function notify_powerup(player_id, name, kind)
+    broadcast({
+        type = "powerup",
+        player_id = player_id,
+        name = name,
+        kind = kind
+    })
 end
 
 function notify_eat(eater_id, victim_id, gold)

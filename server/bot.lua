@@ -98,7 +98,28 @@ local function decide(p)
         return
     end
 
-    -- 3) 觅食：找最近的金币豆
+    -- 3) 顺路捡道具（半径 350 内最近的）
+    local nearest_pw = nil
+    local nearest_pw_d = 350
+    local powerups = World.get_powerups()
+    for i = 1, #powerups do
+        local pw = powerups[i]
+        local d = dist(p.x, p.y, pw.x, pw.y)
+        if d < nearest_pw_d then
+            nearest_pw_d = d
+            nearest_pw = pw
+        end
+    end
+
+    if nearest_pw ~= nil then
+        local d = nearest_pw_d
+        if d < 1 then d = 1 end
+        p.ai_dx = (nearest_pw.x - p.x) / d
+        p.ai_dy = (nearest_pw.y - p.y) / d
+        return
+    end
+
+    -- 4) 觅食：找最近的金币豆
     local nearest = nil
     local nearest_d = sight_food
     local foods = World.get_foods()
@@ -119,7 +140,7 @@ local function decide(p)
         return
     end
 
-    -- 4) 游荡
+    -- 5) 游荡
     local a = math.random() * 6.28318
     p.ai_dx = math.cos(a)
     p.ai_dy = math.sin(a)
