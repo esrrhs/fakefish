@@ -91,6 +91,8 @@ jobs:
           # Update config.yaml with CI MySQL credentials
           sed -i 's/user: "root"/user: "fakefish"/' config.yaml
           sed -i 's/password: ""/password: "changeme"/' config.yaml
+          # Disable bots for the deterministic client/combat phase (re-enabled before test_bots.js)
+          sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml && rm -f config.yaml.bak
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -116,9 +118,6 @@ jobs:
             exit 1
           fi
 
-          # Disable bots for deterministic client/combat tests
-          sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml
-
           # Run client communication test
           echo "=== Running WebSocket Client E2E Test ==="
           node test_client.js
@@ -130,7 +129,7 @@ jobs:
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
           sleep 1
-          mv config.yaml.bak config.yaml
+          sed -i.bak 's/bot_count: 0/bot_count: 3/' config.yaml && rm -f config.yaml.bak
           ./build/fakefish --config=config.yaml > server_bots.log 2>&1 &
           SERVER_PID=$!
           BOT_READY=0
@@ -223,6 +222,8 @@ jobs:
       - name: Prepare runtime configuration
         run: |
           cp config.example.yaml config.yaml
+          # Disable bots for the deterministic client/combat phase (re-enabled before test_bots.js)
+          sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml && rm -f config.yaml.bak
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -248,9 +249,6 @@ jobs:
             exit 1
           fi
 
-          # Disable bots for deterministic client/combat tests
-          sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml
-
           # Run client communication test
           echo "=== Running WebSocket Client E2E Test ==="
           node test_client.js
@@ -262,7 +260,7 @@ jobs:
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
           sleep 1
-          mv config.yaml.bak config.yaml
+          sed -i.bak 's/bot_count: 0/bot_count: 3/' config.yaml && rm -f config.yaml.bak
           ./build/fakefish --config=config.yaml > server_bots.log 2>&1 &
           SERVER_PID=$!
           BOT_READY=0
