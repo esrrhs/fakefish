@@ -198,11 +198,11 @@ end
 function persist_settlement(eater, victim)
     if not eater.is_bot then
         DB.update_gold(eater.name, eater.id, eater.gold)
-        DB.add_kill(eater.id)
+        DB.add_kill(eater.name)
     end
     if not victim.is_bot then
         DB.update_gold(victim.name, victim.id, victim.gold)
-        DB.add_death(victim.id)
+        DB.add_death(victim.name)
     end
 end
 

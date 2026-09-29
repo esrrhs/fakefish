@@ -5,6 +5,14 @@ local is_db_connected = false
 local in_memory_accounts = nil
 local db_state = nil
 
+-- 历史排行缓存（服务端周期刷新，get_rank 直接读缓存应答）
+-- 注意：fakelua 的 conn:query 回调参数是【函数名字符串】（如 "DB.on_top_result"），
+-- 传内联闭包会被 CVarToString 转成空串、回调静默不触发。所有回调必须是包内全局函数。
+-- 回调运行在 C++ 派发上下文：只能写运行时创建的 table 的字段，不能改模块级 upvalue。
+local top_cache = nil
+
+local refresh_interval_ticks = 100 -- 5s @ 50ms tick
+
 function ensure_inited()
     if in_memory_accounts == nil then
         in_memory_accounts = {}
@@ -17,6 +25,8 @@ end
 -- 初始化数据库
 function init(cfg)
     ensure_inited()
+    top_cache = { list = {}, countdown = refresh_interval_ticks - 20 }
+
     if cfg == nil then
         cfg = {}
     end
@@ -85,21 +95,16 @@ function register(username, password_hash, initial_gold)
     }
     in_memory_accounts[username] = account
 
-    -- 异步写入 MySQL
+    -- 异步写入 MySQL（不依赖回调查询结果；落盘一律按 username 定位，
+    -- 因为 MySQL 自增 id 与内存分配的 id 不保证一致）
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then
             local sql = "INSERT INTO accounts (username, password_hash, gold, best_gold) VALUES ('"
                         .. username .. "', '" .. password_hash .. "', " .. tostring(initial_gold)
                         .. ", " .. tostring(initial_gold) .. ")"
-            conn:query(sql, function(c, err, result)
-                pool:release(conn)
-                if err and #err > 0 then
-                    print("[DB] Async INSERT error: " .. tostring(err))
-                elseif result and result[5] then
-                    account.id = result[5]
-                end
-            end)
+            conn:query(sql, "DB.on_exec_result")
+            pool:release(conn)
         end
     end
 
@@ -132,50 +137,40 @@ function update_gold(username, account_id, gold)
         if conn ~= nil then
             local sql = "UPDATE accounts SET gold = " .. tostring(gold)
                         .. ", best_gold = GREATEST(IFNULL(best_gold, 0), " .. tostring(gold) .. ")"
-                        .. " WHERE id = " .. tostring(account_id)
-            conn:query(sql, function(c, err, result)
-                pool:release(conn)
-                if err and #err > 0 then
-                    print("[DB] Async UPDATE error: " .. tostring(err))
-                end
-            end)
+                        .. " WHERE username = '" .. username .. "'"
+            conn:query(sql, "DB.on_exec_result")
+            pool:release(conn)
         end
     end
 end
 
 -- 记击杀数
-function add_kill(account_id)
+function add_kill(username)
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then
-            local sql = "UPDATE accounts SET kills = kills + 1 WHERE id = " .. tostring(account_id)
-            conn:query(sql, function(c, err, result)
-                pool:release(conn)
-                if err and #err > 0 then
-                    print("[DB] Async UPDATE error: " .. tostring(err))
-                end
-            end)
+            local sql = "UPDATE accounts SET kills = kills + 1 WHERE username = '" .. username .. "'"
+            conn:query(sql, "DB.on_exec_result")
+            pool:release(conn)
         end
     end
 end
 
 -- 记死亡数
-function add_death(account_id)
+function add_death(username)
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then
-            local sql = "UPDATE accounts SET deaths = deaths + 1 WHERE id = " .. tostring(account_id)
-            conn:query(sql, function(c, err, result)
-                pool:release(conn)
-                if err and #err > 0 then
-                    print("[DB] Async UPDATE error: " .. tostring(err))
-                end
-            end)
+            local sql = "UPDATE accounts SET deaths = deaths + 1 WHERE username = '" .. username .. "'"
+            conn:query(sql, "DB.on_exec_result")
+            pool:release(conn)
         end
     end
 end
 
--- 内存模式排行：简单插入排序（fakelua 不保证 table.sort 可用，手写稳妥）
+-- ---- 历史排行 ----
+
+-- 内存模式排行：简单插入排序（不依赖 table.sort 的自定义比较器）
 local function sort_top(limit)
     local items = {}
     for _, acc in pairs(in_memory_accounts) do
@@ -207,37 +202,67 @@ local function sort_top(limit)
     return top
 end
 
--- 查询历史排行 top N（按 best_gold 降序）
--- 结果通过 World.enqueue_response 回给指定连接（回调是 C++ 上下文，不能改模块 upvalue）
-function query_top(limit, connid)
+-- 主循环周期调用：刷新排行缓存（SELECT 结果由 DB.on_top_result 写回）
+function tick_refresh()
+    if top_cache == nil then return end
+    top_cache.countdown = top_cache.countdown - 1
+    if top_cache.countdown > 0 then return end
+    top_cache.countdown = refresh_interval_ticks
+
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then
-            local sql = "SELECT username, best_gold, kills FROM accounts ORDER BY best_gold DESC, kills DESC LIMIT "
-                        .. tostring(limit)
-            conn:query(sql, function(c, err, result)
-                pool:release(conn)
-                local list = {}
-                -- SELECT 结果格式: result[1]=true, result[2]=列信息, result[3]=行表（值均为字符串）
-                if err == nil and result ~= nil and result[1] == true and result[3] ~= nil then
-                    local rows = result[3]
-                    for i = 1, #rows do
-                        local row = rows[i]
-                        table.insert(list, {
-                            name = tostring(row[1]),
-                            best_gold = tonumber(row[2]) or 0,
-                            kills = tonumber(row[3]) or 0
-                        })
-                    end
-                end
-                if #list == 0 then
-                    list = sort_top(limit)
-                end
-                World.enqueue_response(connid, { type = "rank", list = list })
-            end)
+            local sql = "SELECT username, best_gold, kills FROM accounts ORDER BY best_gold DESC, kills DESC LIMIT 20"
+            conn:query(sql, "DB.on_top_result")
+            pool:release(conn)
             return
         end
     end
 
-    World.enqueue_response(connid, { type = "rank", list = sort_top(limit) })
+    -- 无 MySQL：直接用内存数据刷新
+    top_cache.list = sort_top(20)
+end
+
+-- SELECT 结果回调（fakelua 按函数名调用；运行在 C++ 派发上下文）
+-- 结果表格式: result[1]=true, result[2]=列信息, result[3]=行表（按列序索引，值均为字符串）
+function on_top_result(c, err, result)
+    if top_cache == nil then return end
+    if err ~= nil and #err > 0 then
+        -- 查询失败（连接不可用等）：回退内存排行，保证排行面板始终有数据
+        top_cache.list = sort_top(20)
+        return
+    end
+    if result == nil or result[1] ~= true or result[3] == nil then return end
+
+    local list = {}
+    local rows = result[3]
+    for i = 1, #rows do
+        local row = rows[i]
+        table.insert(list, {
+            name = tostring(row[1]),
+            best_gold = tonumber(row[2]) or 0,
+            kills = tonumber(row[3]) or 0
+        })
+    end
+    if #list > 0 then
+        top_cache.list = list
+    end
+end
+
+-- INSERT/UPDATE 结果回调：仅记录错误
+function on_exec_result(c, err, result)
+    if err ~= nil and #err > 0 then
+        print("[DB] Async exec error: " .. tostring(err))
+    end
+end
+
+-- 供 NetWs 应答 get_rank：返回缓存的 top N（截断副本）
+function get_top(limit)
+    if top_cache == nil then return {} end
+    local out = {}
+    for i = 1, #top_cache.list do
+        if i > limit then break end
+        table.insert(out, top_cache.list[i])
+    end
+    return out
 end

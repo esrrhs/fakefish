@@ -60,6 +60,9 @@ function start(config_path)
         -- flush 其他暂存消息（register_fail, pong 等）
         NetWs.flush_pending()
 
+        -- 排行缓存周期刷新（SELECT 结果经命名回调写回 DB 缓存）
+        DB.tick_refresh()
+
         -- 机器人 AI 决策（写移动意图，物理结算仍在 World.update）
         Bot.update(dt)
 
