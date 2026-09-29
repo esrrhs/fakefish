@@ -76,7 +76,7 @@ function start(config_path)
         Bot.update(dt)
 
         -- 物理与规则计算
-        local eat_events, died_events = World.update(dt)
+        local eat_events, died_events, powerup_events = World.update(dt)
 
         -- 吞噬与复活事件广播
         for i = 1, #eat_events do
@@ -87,6 +87,12 @@ function start(config_path)
         for i = 1, #died_events do
             local dev = died_events[i]
             NetWs.notify_died(dev.victim_id, dev.gold, dev.x, dev.y)
+        end
+
+        -- 道具拾取事件广播
+        for i = 1, #powerup_events do
+            local pev = powerup_events[i]
+            NetWs.notify_powerup(pev.player_id, pev.name, pev.kind)
         end
 
         -- 快照广播给所有客户端

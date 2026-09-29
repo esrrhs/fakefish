@@ -25,6 +25,13 @@ local food_coins = nil
 local max_food = 80
 local food_val = 5
 
+-- 道具：加速 / 护盾 / 磁铁
+local powerups = nil
+local powerup_count = 5
+local fx_speed_s = 6
+local fx_shield_s = 5
+local fx_magnet_s = 8
+
 -- 待发送响应队列（由 NetWs.on_event 回调中入队，主循环 drain）
 -- 放在 World 模块的 upvalue 中，绕过 NetWs 回调上下文的 const 限制
 -- 注意：必须在 init() 中初始化，不能在模块级别直接赋值为 {}，
@@ -53,6 +60,18 @@ function spawn_foods()
     end
 end
 
+-- 轮转生成三种道具，保证每种都覆盖到
+local powerup_kinds = { "speed", "shield", "magnet" }
+
+function spawn_powerups()
+    powerups = {}
+    for i = 1, powerup_count do
+        local rx = math.random(60, map_width - 60)
+        local ry = math.random(60, map_height - 60)
+        table.insert(powerups, { x = rx, y = ry, kind = powerup_kinds[(i - 1) % 3 + 1] })
+    end
+end
+
 function init(cfg)
     players = {}
     conn_to_pid = {}
@@ -68,9 +87,15 @@ function init(cfg)
     radius_base = cfg["radius_base"] or 15
     radius_k = cfg["radius_k"] or 2.5
     eat_ratio = cfg["eat_ratio"] or 1.05
+    powerup_count = cfg["powerup_count"] or 5
+    fx_speed_s = cfg["fx_speed_s"] or 6
+    fx_shield_s = cfg["fx_shield_s"] or 5
+    fx_magnet_s = cfg["fx_magnet_s"] or 8
 
     spawn_foods()
-    print("[World] Initialized with map " .. tostring(map_width) .. "x" .. tostring(map_height) .. ", " .. tostring(max_food) .. " gold pellets")
+    spawn_powerups()
+    print("[World] Initialized with map " .. tostring(map_width) .. "x" .. tostring(map_height)
+          .. ", " .. tostring(max_food) .. " gold pellets, " .. tostring(powerup_count) .. " powerups")
 end
 
 function get_map_info()
@@ -108,7 +133,10 @@ function add_player(connid, account)
         dy = 0,
         gold = gold,
         r = r,
-        last_seen = os.time()
+        last_seen = os.time(),
+        fx_speed_until = 0,
+        fx_shield_until = 0,
+        fx_magnet_until = 0
     }
 
     players[pid] = p
@@ -138,7 +166,10 @@ function add_bot(name)
         is_bot = true,
         ai_timer = 0,
         ai_dx = 0,
-        ai_dy = 0
+        ai_dy = 0,
+        fx_speed_until = 0,
+        fx_shield_until = 0,
+        fx_magnet_until = 0
     }
 
     players[pid] = p
@@ -213,21 +244,49 @@ end
 
 -- 逻辑帧更新
 -- dt: 秒 (e.g. 0.05)
--- 返回事件列表: eat_events, died_events
+-- 返回事件列表: eat_events, died_events, powerup_events
 function update(dt)
     world_time = world_time + dt
 
-    -- 1. 拾取地面积分金币
+    -- 1. 拾取地面积分金币（磁铁生效时拾取半径 x4）
     for pid, p in pairs(players) do
+        local pickup_r = p.r
+        if world_time < p.fx_magnet_until then
+            pickup_r = p.r * 4
+        end
         for fi = 1, #food_coins do
             local f = food_coins[fi]
             local fdx = p.x - f.x
             local fdy = p.y - f.y
-            if (fdx * fdx + fdy * fdy) < (p.r * p.r) then
+            if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
                 p.gold = p.gold + food_val
                 p.r = Combat.calc_radius(p.gold, radius_base, radius_k)
                 f.x = math.random(50, map_width - 50)
                 f.y = math.random(50, map_height - 50)
+            end
+        end
+    end
+
+    -- 1.5 拾取道具并应用效果
+    local powerup_events = {}
+    for pid, p in pairs(players) do
+        for pi = 1, #powerups do
+            local pw = powerups[pi]
+            local pdx = p.x - pw.x
+            local pdy = p.y - pw.y
+            if (pdx * pdx + pdy * pdy) < (p.r * p.r) then
+                if pw.kind == "speed" then
+                    p.fx_speed_until = world_time + fx_speed_s
+                elseif pw.kind == "shield" then
+                    p.fx_shield_until = world_time + fx_shield_s
+                elseif pw.kind == "magnet" then
+                    p.fx_magnet_until = world_time + fx_magnet_s
+                end
+                table.insert(powerup_events, { player_id = p.id, name = p.name, kind = pw.kind })
+
+                -- 道具随机换位补给
+                pw.x = math.random(60, map_width - 60)
+                pw.y = math.random(60, map_height - 60)
             end
         end
     end
@@ -237,6 +296,11 @@ function update(dt)
         if p.dx ~= 0 or p.dy ~= 0 then
             -- 大球移动略慢，体验更平衡：实际速度 = base_speed / (1 + r * 0.005)
             local speed_factor = 1.0 / (1.0 + (p.r - radius_base) * 0.003)
+
+            -- 加速道具生效中 x1.5
+            if world_time < p.fx_speed_until then
+                speed_factor = speed_factor * 1.5
+            end
             local cur_speed = move_speed * speed_factor
 
             p.x = p.x + p.dx * cur_speed * dt
@@ -271,6 +335,13 @@ function update(dt)
 
                 if p2 ~= nil then
                     local res = Combat.check_eat(p1.x, p1.y, p1.r, p1.gold, p2.x, p2.y, p2.r, p2.gold, eat_ratio)
+                    -- 护盾生效中的受害者免于吞噬
+                    if res == 1 and world_time < p2.fx_shield_until then
+                        res = 0
+                    elseif res == 2 and world_time < p1.fx_shield_until then
+                        res = 0
+                    end
+
                     if res == 1 then
                         -- p1 吃掉 p2
                         local eaten_gold = p2.gold
@@ -316,7 +387,7 @@ function update(dt)
         end
     end
 
-    return eat_events, died_events
+    return eat_events, died_events, powerup_events
 end
 
 -- 生成场景快照数据
@@ -332,9 +403,21 @@ function get_snapshot()
             r = math.floor(p.r * 10) / 10
         }
         if p.is_bot then entry.bot = true end
+        -- 当前生效中的道具特效（按护盾 > 加速 > 磁铁优先展示）
+        if world_time < p.fx_shield_until then
+            entry.fx = "shield"
+        elseif world_time < p.fx_speed_until then
+            entry.fx = "speed"
+        elseif world_time < p.fx_magnet_until then
+            entry.fx = "magnet"
+        end
         table.insert(snap_list, entry)
     end
-    return snap_list, food_coins
+    return snap_list, food_coins, powerups
+end
+
+function get_powerups()
+    return powerups
 end
 
 -- 收到该连接任何消息时刷新活跃时间（心跳超时踢人依据）

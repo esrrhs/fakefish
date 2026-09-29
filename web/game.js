@@ -8,6 +8,7 @@
     let mapInfo = { width: 2000, height: 2000 };
     let players = new Map(); // id -> { id, name, x, y, gold, r, color, targetX, targetY }
     let foods = []; // [ { x, y } ]
+    let powerups = []; // [ { x, y, kind } ]
     let camera = { x: 1000, y: 1000 };
     let isConnected = false;
     let authMode = "login"; // 'login' or 'register'
@@ -193,7 +194,7 @@
                 break;
 
             case "snapshot":
-                handleSnapshot(msg.players || [], msg.foods || []);
+                handleSnapshot(msg.players || [], msg.foods || [], msg.powerups || []);
                 break;
 
             case "eat":
@@ -209,15 +210,22 @@
                 }
                 break;
 
+            case "powerup":
+                handlePowerupEvent(msg);
+                break;
+
             case "pong":
                 break;
         }
     }
 
     // 处理快照
-    function handleSnapshot(playerList, foodList) {
+    function handleSnapshot(playerList, foodList, powerupList) {
         if (foodList && foodList.length > 0) {
             foods = foodList;
+        }
+        if (powerupList) {
+            powerups = powerupList;
         }
         const currentIds = new Set();
         hudOnline.innerText = playerList.length;
@@ -234,6 +242,7 @@
                     gold: p.gold,
                     r: p.r,
                     bot: !!p.bot,
+                    fx: p.fx || null,
                     color: p.color || getPlayerColor(p.id)
                 };
                 players.set(p.id, existing);
@@ -245,6 +254,7 @@
                 if (p.name) existing.name = p.name;
                 if (p.color) existing.color = p.color;
                 existing.bot = !!p.bot;
+                existing.fx = p.fx || null;
             }
 
             // 更新自己 HUD
@@ -335,6 +345,29 @@
             entry.classList.add("feed-fade");
             setTimeout(() => entry.remove(), 800);
         }, 6000);
+    }
+
+    // 道具拾取事件
+    const FX_META = {
+        speed: { icon: "⚡", color: "#34d399", label: "加速" },
+        shield: { icon: "🛡️", color: "#60a5fa", label: "护盾" },
+        magnet: { icon: "🧲", color: "#f472b6", label: "磁铁" }
+    };
+
+    function handlePowerupEvent(msg) {
+        const meta = FX_META[msg.kind] || { icon: "✨", color: "#fff", label: msg.kind };
+        const who = msg.name || `Player_${msg.player_id}`;
+
+        if (msg.player_id === localPlayerId) {
+            showToast(`拾取道具：${meta.icon} ${meta.label}！`, "success");
+        }
+
+        const owner = players.get(msg.player_id);
+        if (owner) {
+            addFloatingText(`${meta.icon} ${meta.label}`, owner.x, owner.y - owner.r - 28, meta.color, 16);
+        } else if (msg.player_id !== localPlayerId) {
+            console.log(`[powerup] ${who} picked ${msg.kind}`);
+        }
     }
 
     function getPlayerColor(id) {
@@ -466,6 +499,9 @@
         // 3. 绘制地面积分金币
         drawFoods();
 
+        // 3.5 绘制道具
+        drawPowerups();
+
         // 4. 绘制所有玩家小球（按金币由小到大排序，大球覆盖在上方）
         const sortedPlayers = Array.from(players.values()).sort((a, b) => a.gold - b.gold);
         for (const p of sortedPlayers) {
@@ -489,6 +525,38 @@
             ctx.fill();
         }
         ctx.restore();
+    }
+
+    function drawPowerups() {
+        for (const pw of powerups) {
+            const meta = FX_META[pw.kind] || { icon: "✨", color: "#fff" };
+            ctx.save();
+            // 旋转菱形底座
+            ctx.translate(pw.x, pw.y);
+            ctx.rotate(Date.now() / 600 % (Math.PI * 2));
+            ctx.beginPath();
+            ctx.moveTo(0, -13);
+            ctx.lineTo(13, 0);
+            ctx.lineTo(0, 13);
+            ctx.lineTo(-13, 0);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+            ctx.strokeStyle = meta.color;
+            ctx.lineWidth = 2.5;
+            ctx.shadowColor = meta.color;
+            ctx.shadowBlur = 14;
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+
+            // 图标（不随旋转）
+            ctx.save();
+            ctx.font = "14px sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(meta.icon, pw.x, pw.y + 1);
+            ctx.restore();
+        }
     }
 
     function drawGrid() {
@@ -546,6 +614,17 @@
             ctx.lineWidth = 3;
             ctx.strokeStyle = "#ffffff";
             ctx.stroke();
+        }
+
+        // 道具特效光环
+        if (p.fx && FX_META[p.fx]) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.r + 6, 0, Math.PI * 2);
+            ctx.strokeStyle = FX_META[p.fx].color;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
 
         ctx.shadowBlur = 0;

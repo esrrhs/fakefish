@@ -99,14 +99,15 @@
 |------|------|------|
 | `login_ok` | `player_id`, `gold`, `map` | 登录成功 |
 | `login_fail` / `register_fail` | `reason` | 失败原因 |
-| `snapshot` | `players[]` | 全量或差分场景状态 |
+| `snapshot` | `players[]`, `foods[]`, `powerups[]` | 全量或差分场景状态 |
+| `powerup` | `player_id`, `name`, `kind` | 道具拾取事件（kind: speed/shield/magnet） |
 | `player_join` / `player_leave` | `player_id`, … | 进出场 |
 | `eat` | `eater_id`, `victim_id`, `eater_name`, `victim_name`, `gold` | 吃球事件（可驱动特效与击杀播报） |
 | `you_died` | `gold`, `x`, `y` | 自己被吃后复活信息 |
 | `rank` | `list[]` | 历史最佳排行（按 `best_gold` 降序，来自 MySQL） |
 | `error` | `reason` | 通用错误 |
 
-`players[]` 元素示例：`{ id, name, x, y, gold, r, bot? }`。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人。
+`players[]` 元素示例：`{ id, name, x, y, gold, r, bot?, fx? }`。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人，`fx: speed/shield/magnet` 表示道具特效生效中。
 
 ### 7. 服务器模块划分（FakeLua）
 
@@ -224,6 +225,7 @@ fakefish/
   test_client.js          # 端到端 WebSocket 自动化测试
   test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证测试
   test_bots.js            # AI 机器人与历史排行验证测试
+  test_powerup.js         # 道具拾取与特效验证测试
   CMakeLists.txt          # 工程构建配置（Modern CMake find_package）
 ```
 
@@ -273,6 +275,15 @@ fakefish/
 - [x] 修复目录穿越防护：fakelua 的 `string.find` 走 ECMAScript 正则（boost::regex），Lua 模式转义 `%.` 语义不同导致旧检查失效，改用 plain 子串查找
 - [x] 端到端测试脚本（`test_api.js`）并纳入 CI
 
+### Phase 7 — 道具系统
+
+- [x] 地图道具（`game.powerup_count`，默认 5 个）：**⚡ 加速**（移速 x1.5，6s）、**🛡️ 护盾**（免疫吞噬，5s）、**🧲 磁铁**（金币豆拾取半径 x4，8s），持续时间可配（`fx_speed_s` / `fx_shield_s` / `fx_magnet_s`）
+- [x] 护盾接入吞噬结算：持盾者不可被吃，到时自动失效；磁铁/加速分别在拾取与移动管线生效
+- [x] 快照广播道具位置与种类（`powerups[]`）及玩家当前特效（`fx` 字段）；拾取事件 `powerup` 实时广播
+- [x] 前端：旋转菱形道具、玩家特效虚线光环、拾取 Toast 与飘字
+- [x] Bot AI 顺路捡道具（威胁 > 猎物 > 道具 > 觅食优先级）
+- [x] 端到端测试脚本（`test_powerup.js`）并纳入 CI
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -281,6 +292,7 @@ fakefish/
 4. **M4**：浏览器访问 `http://127.0.0.1:8080` 开箱即玩：**已通过**
 5. **M5**：机器人进场游走、历史排行跨会话持久化（MySQL）与内存降级排行：**已通过**
 6. **M6**：HTTP JSON API 可查询排行/统计、空闲连接被超时踢出、击杀播报实时展示：**已通过**
+7. **M7**：三种道具拾取生效与过期、护盾阻断吞噬、快照/事件同步、Bot 主动拾取：**已通过**
 
 ---
 
