@@ -3,6 +3,11 @@ package "NetWs"
 local ws_server_obj = nil
 local ws_port = 8081
 
+-- 待发送消息队列：on_event 回调（C++调Lua）中不能直接 ws_server_obj:send()，
+-- 因为部分平台（Linux）的 WebSocket 实现在回调上下文中 send 会被静默丢弃。
+-- 改为在回调中入队，主循环 tick() 后统一 flush。
+local pending_sends = {}
+
 -- WebSocket 事件分发（C++ 回调入口）
 function on_event(type, connid, data, len, reason)
     if type == "conn" then
@@ -32,9 +37,9 @@ function on_event(type, connid, data, len, reason)
                     gold = p.gold,
                     map = World.get_map_info()
                 }
-                send(connid, resp)
+                queue_send(connid, resp)
             else
-                send(connid, { type = "register_fail", reason = tostring(res) })
+                queue_send(connid, { type = "register_fail", reason = tostring(res) })
             end
 
         elseif mtype == "login" then
@@ -49,9 +54,9 @@ function on_event(type, connid, data, len, reason)
                     gold = p.gold,
                     map = World.get_map_info()
                 }
-                send(connid, resp)
+                queue_send(connid, resp)
             else
-                send(connid, { type = "login_fail", reason = tostring(res) })
+                queue_send(connid, { type = "login_fail", reason = tostring(res) })
             end
 
         elseif mtype == "move" then
@@ -60,7 +65,7 @@ function on_event(type, connid, data, len, reason)
             World.set_player_move(connid, dx, dy)
 
         elseif mtype == "ping" then
-            send(connid, { type = "pong" })
+            queue_send(connid, { type = "pong" })
         end
 
     elseif type == "close" then
@@ -93,6 +98,21 @@ function init(cfg)
     ws_server_obj:dispatch("NetWs.on_event")
     print("[NetWs] WebSocket server listening on port " .. tostring(ws_port))
     return true
+end
+
+-- 入队待发送消息（用于回调上下文）
+function queue_send(connid, tbl)
+    table.insert(pending_sends, { connid = connid, tbl = tbl })
+end
+
+-- flush 所有待发送消息（在主循环 tick() 之后调用）
+function flush_pending()
+    if #pending_sends == 0 then return end
+    for i = 1, #pending_sends do
+        local item = pending_sends[i]
+        send(item.connid, item.tbl)
+    end
+    pending_sends = {}
 end
 
 function send(connid, tbl)
