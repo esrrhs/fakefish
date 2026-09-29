@@ -1,0 +1,3 @@
+[submodule "third_party/fakelua"]
+	path = third_party/fakelua
+	url = https://github.com/esrrhs/fakelua

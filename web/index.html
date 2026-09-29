@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FakeFish - 金币球 · 大鱼吃小鱼</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <!-- 游戏画布 -->
+        <canvas id="game-canvas"></canvas>
+
+        <!-- 顶部 HUD -->
+        <div id="hud" class="hidden">
+            <div class="hud-card">
+                <span class="hud-label">玩家:</span>
+                <span id="hud-name" class="hud-val">-</span>
+            </div>
+            <div class="hud-card">
+                <span class="hud-label">金币:</span>
+                <span id="hud-gold" class="hud-val gold-text">0</span>
+            </div>
+            <div class="hud-card">
+                <span class="hud-label">体型:</span>
+                <span id="hud-radius" class="hud-val">0</span>
+            </div>
+            <div class="hud-card">
+                <span class="hud-label">坐标:</span>
+                <span id="hud-pos" class="hud-val">(0, 0)</span>
+            </div>
+            <div class="hud-card">
+                <span class="hud-label">在线人数:</span>
+                <span id="hud-online" class="hud-val">0</span>
+            </div>
+        </div>
+
+        <!-- 排行榜 -->
+        <div id="leaderboard" class="hidden">
+            <h3>🏆 排行榜</h3>
+            <ol id="leaderboard-list"></ol>
+        </div>
+
+        <!-- 提示消息通知浮窗 -->
+        <div id="notification-box"></div>
+
+        <!-- 登录 / 注册模态窗口 -->
+        <div id="auth-modal" class="modal">
+            <div class="modal-content">
+                <h1 class="logo-title">🪙 FakeFish 🐟</h1>
+                <p class="subtitle">FakeLua 驱动的大鱼吃小鱼实时 PVP 沙盒</p>
+
+                <div class="tabs">
+                    <button id="tab-login" class="tab-btn active">登录</button>
+                    <button id="tab-register" class="tab-btn">注册</button>
+                </div>
+
+                <div class="form-group">
+                    <label for="auth-username">账号名称</label>
+                    <input type="text" id="auth-username" maxlength="20" placeholder="请输入用户名 (英文/数字)" autocomplete="off">
+                </div>
+
+                <div class="form-group">
+                    <label for="auth-password">登录密码</label>
+                    <input type="password" id="auth-password" placeholder="请输入密码">
+                </div>
+
+                <div id="auth-error" class="error-msg hidden"></div>
+
+                <button id="btn-submit" class="primary-btn">进入竞技场</button>
+
+                <div class="guide-tip">
+                    <p>🎮 <strong>操作指南</strong>：方向键 / WASD 移动；或鼠标指向方向移动。</p>
+                    <p>⚖️ <strong>规则</strong>：吃掉比自己小的球夺取金币，体型越大移动越稳！</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>

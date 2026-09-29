@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: fakefish-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: fakefish
+      MYSQL_USER: fakefish
+      MYSQL_PASSWORD: changeme
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - fakefish_mysql_data:/var/lib/mysql
+
+volumes:
+  fakefish_mysql_data:
