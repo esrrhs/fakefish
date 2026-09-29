@@ -9,11 +9,11 @@ local radius_k = 2.5
 local eat_ratio = 1.05
 
 -- 在线玩家表: player_id -> player_record
-local players = {}
-local conn_to_pid = {}
-local pid_to_conn = {}
+local players = nil
+local conn_to_pid = nil
+local pid_to_conn = nil
 
-local food_coins = {}
+local food_coins = nil
 local max_food = 80
 local food_val = 5
 
@@ -27,6 +27,9 @@ function spawn_foods()
 end
 
 function init(cfg)
+    players = {}
+    conn_to_pid = {}
+    pid_to_conn = {}
     if cfg == nil then cfg = {} end
     map_width = cfg["map_width"] or 2000
     map_height = cfg["map_height"] or 2000

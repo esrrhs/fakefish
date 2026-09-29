@@ -165,7 +165,7 @@ game:
 - [x] GitHub 仓库重命名：`fake_game_server` → **`fakefish`**
 - [x] 清空旧 C++/fake 多进程框架代码
 - [x] 本设计文档与开发计划写入 README
-- [x] 接入 `esrrhs/fakelua`（git submodule `third_party/fakelua`）
+- [x] 接入 `esrrhs/fakelua`（通过 Modern CMake `find_package(fakelua REQUIRED)`）
 - [x] 最小可运行入口：宿主程序 `host/main.cpp` 加载配置与 `server/main.lua`，进入 `runtime.tick`
 - [x] `.gitignore`、目录约定、`config.example.yaml`
 
@@ -195,8 +195,7 @@ fakefish/
     style.css             # 暗色赛博霓虹风格 UI
   test_client.js          # 端到端 WebSocket 自动化测试
   test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证测试
-  third_party/fakelua/    # FakeLua 运行时子模块
-  CMakeLists.txt          # 工程构建配置
+  CMakeLists.txt          # 工程构建配置（Modern CMake find_package）
 ```
 
 ### Phase 1 — 基础设施
@@ -242,9 +241,8 @@ fakefish/
 ### 1. 依赖准备
 
 - **CMake** >= 3.20
-- **C++17 编译器** (Clang / GCC)
-- **Boost** >= 1.80 (推荐通过 Homebrew 安装: `brew install boost`)
-- **OpenSSL** (推荐: `brew install openssl`)
+- **C++23 编译器** (Clang / GCC)
+- **fakelua** (系统安装于 `/usr/local` 或 CMake 搜索路径，提供 `fakelua::fakelua` 目标)
 - **Node.js** (可选，仅运行自动化测试脚本时需要 `npm install ws`)
 
 ### 2. 数据库配置（可选）
@@ -258,13 +256,10 @@ docker compose up -d
 ### 3. 构建
 
 ```bash
-# 1. 首次拉取子模块
-git submodule update --init --recursive
-
-# 2. 复制配置文件
+# 1. 复制配置文件
 cp config.example.yaml config.yaml
 
-# 3. 编译
+# 2. 编译
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```

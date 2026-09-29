@@ -2,11 +2,21 @@ package "DB"
 
 local pool = nil
 local is_db_connected = false
-local in_memory_accounts = {} -- fallback: username -> { id, username, password_hash, gold }
-local next_auto_id = 1000
+local in_memory_accounts = nil
+local db_state = nil
+
+function ensure_inited()
+    if in_memory_accounts == nil then
+        in_memory_accounts = {}
+    end
+    if db_state == nil then
+        db_state = { next_id = 1000 }
+    end
+end
 
 -- 初始化数据库
 function init(cfg)
+    ensure_inited()
     if cfg == nil then
         cfg = {}
     end
@@ -55,6 +65,7 @@ end
 -- 注册新用户
 -- 返回: success(bool), reason_or_account(table or string)
 function register(username, password_hash, initial_gold)
+    ensure_inited()
     if initial_gold == nil then initial_gold = 100 end
 
     -- 先检查内存 fallback
@@ -62,9 +73,9 @@ function register(username, password_hash, initial_gold)
         return false, "用户名已被注册"
     end
 
-    next_auto_id = next_auto_id + 1
+    db_state.next_id = db_state.next_id + 1
     local account = {
-        id = next_auto_id,
+        id = db_state.next_id,
         username = username,
         password_hash = password_hash,
         gold = initial_gold
@@ -93,6 +104,7 @@ end
 
 -- 根据用户名获取账号信息
 function get_account(username)
+    ensure_inited()
     local mem_acc = in_memory_accounts[username]
     if mem_acc ~= nil then
         return true, mem_acc

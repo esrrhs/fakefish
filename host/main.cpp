@@ -2,13 +2,14 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <filesystem>
 
 using namespace fakelua;
 
 int main(int argc, char **argv) {
     std::string config_path = "config.yaml";
     std::string script_path = "server/main.lua";
-    int jit_type = static_cast<int>(JIT_TCC);
+    int jit_type = static_cast<int>(JIT_GCC);
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -24,7 +25,7 @@ int main(int argc, char **argv) {
                       << "Options:\n"
                       << "  --config=FILE   Path to configuration YAML (default: config.yaml)\n"
                       << "  --script=FILE   Path to entry Lua script (default: server/main.lua)\n"
-                      << "  --jit=TYPE      JIT type (0=TCC, 1=GCC, 2=Interp, default: 0)\n"
+                      << "  --jit=TYPE      JIT type (0=TCC, 1=GCC, 2=Interp, default: 1)\n"
                       << "  --help, -h      Show this help message\n";
             return 0;
         }
@@ -42,13 +43,28 @@ int main(int argc, char **argv) {
 
     CompileConfig cfg;
     cfg.debug_mode = false;
+    cfg.disable_jit[JIT_TCC] = true;
 
-    try {
-        CompileFile(s, script_path, cfg);
-    } catch (const std::exception &e) {
-        std::cerr << "[FakeFish] Failed to compile entry script " << script_path 
-                  << ": " << e.what() << std::endl;
-        return 1;
+    // 按依赖顺序预编译各核心逻辑模块
+    const std::vector<std::string> module_files = {
+        "server/config.lua",
+        "server/combat.lua",
+        "server/db.lua",
+        "server/auth.lua",
+        "server/world.lua",
+        "server/net_ws.lua",
+        "server/http_static.lua",
+        script_path
+    };
+
+    for (const auto &file : module_files) {
+        try {
+            CompileFile(s, file, cfg);
+        } catch (const std::exception &e) {
+            std::cerr << "[FakeFish] Failed to compile script " << file 
+                      << ": " << e.what() << std::endl;
+            return 1;
+        }
     }
 
     int code = 0;
