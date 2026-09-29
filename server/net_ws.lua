@@ -102,8 +102,10 @@ end
 function flush_pending()
     local responses = World.drain_responses()
     if responses == nil then return end
+    print("[NetWs] flush_pending: sending " .. tostring(#responses) .. " messages")
     for i = 1, #responses do
         local item = responses[i]
+        print("[NetWs] flush_pending: sending to connid=" .. tostring(item.connid) .. ", type=" .. tostring(item.tbl["type"]))
         send(item.connid, item.tbl)
     end
 end
