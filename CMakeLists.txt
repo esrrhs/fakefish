@@ -5,6 +5,10 @@ project(fakefish CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 优先在标准路径与 Homebrew 路径查找依赖
+list(APPEND CMAKE_PREFIX_PATH "/usr/local" "/opt/homebrew")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 # 查找系统已安装的 fakelua
 find_package(fakelua REQUIRED)
 
