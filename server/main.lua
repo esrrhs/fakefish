@@ -2,13 +2,7 @@
 package "Main"
 
 function load_modules()
-    dofile("server/config.lua")
-    dofile("server/combat.lua")
-    dofile("server/db.lua")
-    dofile("server/auth.lua")
-    dofile("server/world.lua")
-    dofile("server/net_ws.lua")
-    dofile("server/http_static.lua")
+    -- All modules (Config, Combat, DB, Auth, World, NetWs, HttpStatic) are pre-compiled by host
 end
 
 function start(config_path)
