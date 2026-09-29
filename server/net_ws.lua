@@ -63,10 +63,10 @@ function on_event(type, connid, data, len, reason)
             World.set_player_move(connid, dx, dy)
 
         elseif mtype == "get_rank" then
-            -- 历史排行：异步查库，结果经 World 队列在主循环回发
+            -- 历史排行：直接读服务端缓存（DB.tick_refresh 周期从 MySQL/内存刷新）
             local limit = msg["limit"] or 10
             if limit > 20 then limit = 20 end
-            DB.query_top(limit, connid)
+            World.enqueue_response(connid, { type = "rank", list = DB.get_top(limit) })
 
         elseif mtype == "ping" then
             World.enqueue_response(connid, { type = "pong" })
