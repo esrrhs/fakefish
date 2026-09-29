@@ -6,7 +6,8 @@ local ws_port = 8081
 -- WebSocket 事件分发（C++ 回调入口）
 -- 注意：在此回调中不能修改本模块的 local upvalue（fakelua const 限制），
 -- 也不能直接 ws_server_obj:send()（Linux 上静默丢弃）。
--- 需要发送的消息通过 World 模块暂存，主循环 flush。
+-- login_ok 等响应存储在玩家记录中（World 模块的 runtime table），主循环通过
+-- p.connid 发送（与 broadcast 同路径，确保跨平台一致）。
 function on_event(type, connid, data, len, reason)
     if type == "conn" then
         print("[NetWs] Client connected, connid=" .. tostring(connid))
@@ -29,13 +30,13 @@ function on_event(type, connid, data, len, reason)
             if success then
                 -- 注册后自动进场
                 local p = World.add_player(connid, res)
-                local resp = {
+                -- 将 login_ok 响应存储在玩家记录上，主循环通过 p.connid 发送
+                p.pending_login_ok = {
                     type = "login_ok",
                     player_id = p.id,
                     gold = p.gold,
                     map = World.get_map_info()
                 }
-                World.enqueue_response(connid, resp)
             else
                 World.enqueue_response(connid, { type = "register_fail", reason = tostring(res) })
             end
@@ -46,13 +47,12 @@ function on_event(type, connid, data, len, reason)
             local success, res = Auth.handle_login(username, password)
             if success then
                 local p = World.add_player(connid, res)
-                local resp = {
+                p.pending_login_ok = {
                     type = "login_ok",
                     player_id = p.id,
                     gold = p.gold,
                     map = World.get_map_info()
                 }
-                World.enqueue_response(connid, resp)
             else
                 World.enqueue_response(connid, { type = "login_fail", reason = tostring(res) })
             end
@@ -98,14 +98,26 @@ function init(cfg)
     return true
 end
 
--- flush World 中暂存的消息（在主循环 tick() 之后调用，此时不在 C++ 回调上下文中）
+-- 发送玩家登录响应（通过 p.connid，与 broadcast 同路径）
+-- 在主循环中调用，不在 C++ 回调上下文中
+function flush_login_responses()
+    if ws_server_obj == nil then return end
+    local all_players = World.get_all_players()
+    for pid, p in pairs(all_players) do
+        if p.pending_login_ok ~= nil then
+            local json_str = json.encode(p.pending_login_ok)
+            ws_server_obj:send(p.connid, json_str)
+            p.pending_login_ok = nil
+        end
+    end
+end
+
+-- flush World 中暂存的其他消息（register_fail, pong 等）
 function flush_pending()
     local responses = World.drain_responses()
     if responses == nil then return end
-    print("[NetWs] flush_pending: sending " .. tostring(#responses) .. " messages")
     for i = 1, #responses do
         local item = responses[i]
-        print("[NetWs] flush_pending: sending to connid=" .. tostring(item.connid) .. ", type=" .. tostring(item.tbl["type"]))
         send(item.connid, item.tbl)
     end
 end
