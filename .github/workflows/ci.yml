@@ -116,13 +116,36 @@ jobs:
             exit 1
           fi
 
+          # Disable bots for deterministic client/combat tests
+          sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml
+
           # Run client communication test
           echo "=== Running WebSocket Client E2E Test ==="
           node test_client.js
 
-          # Run full combat and eating verification test
+          # Run full combat and eating verification test (bot-free world)
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
+
+          # Kill server, restart with bots enabled for the bots/rank test
+          kill $SERVER_PID || true
+          sleep 1
+          mv config.yaml.bak config.yaml
+          ./build/fakefish --config=config.yaml > server_bots.log 2>&1 &
+          SERVER_PID=$!
+          BOT_READY=0
+          for i in $(seq 1 60); do
+            if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
+              BOT_READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ $BOT_READY -ne 1 ]; then
+            echo "Server failed to restart within 60s. Log output:"
+            cat server_bots.log
+            exit 1
+          fi
 
           # Run bots and persistent rank test
           echo "=== Running Bots & Rank E2E Test ==="
@@ -137,6 +160,10 @@ jobs:
           if [ -f server.log ]; then
             echo "=== Server Output ==="
             cat server.log
+          fi
+          if [ -f server_bots.log ]; then
+            echo "=== Bots-phase Server Output ==="
+            cat server_bots.log
           fi
 
   test-macos:
@@ -221,13 +248,36 @@ jobs:
             exit 1
           fi
 
+          # Disable bots for deterministic client/combat tests
+          sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml
+
           # Run client communication test
           echo "=== Running WebSocket Client E2E Test ==="
           node test_client.js
 
-          # Run full combat and eating verification test
+          # Run full combat and eating verification test (bot-free world)
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
+
+          # Kill server, restart with bots enabled for the bots/rank test
+          kill $SERVER_PID || true
+          sleep 1
+          mv config.yaml.bak config.yaml
+          ./build/fakefish --config=config.yaml > server_bots.log 2>&1 &
+          SERVER_PID=$!
+          BOT_READY=0
+          for i in $(seq 1 60); do
+            if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
+              BOT_READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ $BOT_READY -ne 1 ]; then
+            echo "Server failed to restart within 60s. Log output:"
+            cat server_bots.log
+            exit 1
+          fi
 
           # Run bots and persistent rank test
           echo "=== Running Bots & Rank E2E Test ==="
@@ -242,4 +292,8 @@ jobs:
           if [ -f server.log ]; then
             echo "=== Server Output ==="
             cat server.log
+          fi
+          if [ -f server_bots.log ]; then
+            echo "=== Bots-phase Server Output ==="
+            cat server_bots.log
           fi
