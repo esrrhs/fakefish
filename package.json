@@ -1,0 +1,13 @@
+{
+  "name": "fakefish",
+  "version": "1.0.0",
+  "description": "FakeFish - 2D PVP game server and web client demo powered by FakeLua",
+  "scripts": {
+    "test": "node test_client.js && node test_combat.js",
+    "test:client": "node test_client.js",
+    "test:combat": "node test_combat.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

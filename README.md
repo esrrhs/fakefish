@@ -1,5 +1,7 @@
 # FakeFish
 
+[![CI](https://github.com/esrrhs/fakefish/actions/workflows/ci.yml/badge.svg)](https://github.com/esrrhs/fakefish/actions/workflows/ci.yml)
+
 用于验证 [esrrhs/fakelua](https://github.com/esrrhs/fakelua) 能力的 **demo 游戏**：在真实可玩场景里串起 FakeLua 的脚本运行时、`runtime.tick` 事件泵、WebSocket、HTTP、MySQL、JSON、定时器与配置解析等能力。
 
 玩法是简易网页 2D PVP：**金币球 · 大鱼吃小鱼**。服务端为单线程 FakeLua 程序，全部玩法逻辑在后端；前端只做表现与输入上报。账号数据存 MySQL，客户端通过 WebSocket 与服务器通信。
