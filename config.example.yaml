@@ -1,0 +1,23 @@
+server:
+  http_port: 8080          # 静态前端服务端口
+  ws_port: 8081            # 游戏 WebSocket 服务端口
+  tick_ms: 50              # 逻辑帧间隔 (50ms ~ 20Hz)
+  web_dir: "web"           # 静态页面资源目录
+
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  user: "root"
+  password: ""
+  db: "fakefish"
+  pool_size: 2
+  heartbeat_ms: 5000
+
+game:
+  map_width: 2000          # 地图宽度
+  map_height: 2000         # 地图高度
+  initial_gold: 100        # 初始/复活金币
+  move_speed: 160          # 移动速度（像素/秒）
+  radius_base: 15          # 基础半径
+  radius_k: 2.5            # 半径系数：r = base + k * sqrt(gold)
+  eat_ratio: 1.05          # 吞噬阈值：大球半径 >= 小球半径 * ratio

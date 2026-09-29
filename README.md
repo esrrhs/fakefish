@@ -160,91 +160,141 @@ game:
 
 ## 开发计划
 
-### Phase 0 — 仓库与脚手架（当前）
+### Phase 0 — 仓库与脚手架
 
 - [x] GitHub 仓库重命名：`fake_game_server` → **`fakefish`**
 - [x] 清空旧 C++/fake 多进程框架代码
 - [x] 本设计文档与开发计划写入 README
-- [ ] 接入 `esrrhs/fakelua`（CPM / git submodule）
-- [ ] 最小可运行入口：加载配置 → 打印 → `runtime.tick` 空循环
-- [ ] `.gitignore`、目录约定、`config.example.yaml`
+- [x] 接入 `esrrhs/fakelua`（git submodule `third_party/fakelua`）
+- [x] 最小可运行入口：宿主程序 `host/main.cpp` 加载配置与 `server/main.lua`，进入 `runtime.tick`
+- [x] `.gitignore`、目录约定、`config.example.yaml`
 
-**建议目录：**
+**项目目录结构：**
 
 ```
 fakefish/
   README.md
   config.example.yaml
-  sql/schema.sql
-  server/                 # FakeLua 业务脚本
-    main.lua
-    config.lua
-    db.lua
-    auth.lua
-    world.lua
-    combat.lua
-    net_ws.lua
-  web/                    # 静态前端
-    index.html
-    game.js
-    style.css
-  third_party/fakelua/    # 或 CPM 拉取
-  CMakeLists.txt          # 可选：包装 flua/自定义 host
+  config.yaml             # 本地运行配置（自动被 git 忽略）
+  docker-compose.yml      # 可选：一键拉起 MySQL 容器
+  sql/schema.sql          # 数据库初始化表结构
+  host/
+    main.cpp              # C++ 宿主入口，初始化 FakeLua State 并启动脚本
+  server/                 # 权威服务端 FakeLua 业务脚本
+    main.lua              # 服务端主循环与模块编排
+    config.lua            # YAML 配置解析与管理
+    db.lua                # MySQL 连接池与内存回退存储
+    auth.lua              # SHA256 密码哈希、用户注册与鉴权
+    world.lua             # 实体状态、移动积分、边界与金币豆刷新
+    combat.lua            # 质量/半径公式与大鱼吃小鱼碰撞判定
+    net_ws.lua            # WebSocket 路由、事件分发与 20Hz 场景快照广播
+    http_static.lua       # HTTP 静态前端文件托管
+  web/                    # 纯原生 HTML5/Canvas 静态前端
+    index.html            # 登录界面与全屏 Canvas 画布、HUD
+    game.js               # WebSocket 客户端、相机跟随、平滑渲染
+    style.css             # 暗色赛博霓虹风格 UI
+  test_client.js          # 端到端 WebSocket 自动化测试
+  test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证测试
+  third_party/fakelua/    # FakeLua 运行时子模块
+  CMakeLists.txt          # 工程构建配置
 ```
 
 ### Phase 1 — 基础设施
 
-- [ ] MySQL schema + 连接/连接池封装
-- [ ] 注册 / 登录（含密码哈希）
-- [ ] WebSocket 握手与 JSON 路由骨架
-- [ ] HTTP 托管 `web/`（或开发期用任意静态服务器）
+- [x] MySQL schema + 连接/连接池封装（支持无 MySQL 环境自动降级内存模式）
+- [x] 注册 / 登录（含 SHA256 密码哈希）
+- [x] WebSocket 握手与 JSON 路由骨架
+- [x] HTTP 托管 `web/`（自动解析 MIME 类型托管静态页）
 
 ### Phase 2 — 世界与玩法
 
-- [ ] 玩家进场：按金币算半径、随机出生点
-- [ ] 移动积分 + 地图边界
-- [ ] 碰撞检测 + 吃球 + 复活
-- [ ] 状态广播（全量 snapshot 或增量）
-- [ ] 金币回写 MySQL（节流 + 断线落盘）
+- [x] 玩家进场：按金币算半径、随机出生点
+- [x] 移动积分 + 地图边界 + 场景散落金币豆（自动拾取与补给）
+- [x] 碰撞检测 + 吃球 + 复活重置
+- [x] 状态广播（20Hz 场景全量快照与事件推送）
+- [x] 金币回写 MySQL（吃球实时结算落盘 + 离场自动保存）
 
 ### Phase 3 — 前端可玩
 
-- [ ] 登录/注册 UI
-- [ ] Canvas 渲染球、昵称、金币
-- [ ] 输入 → `move`；处理 `snapshot` / `eat` / `you_died`
-- [ ] 断线重连提示（可选）
+- [x] 登录/注册 UI（表单弹窗、回车提交）
+- [x] Canvas 渲染球、霓虹光晕、昵称、金币标签、排行榜 HUD
+- [x] 输入监听（WASD / 方向键 / 鼠标跟随） → 上报 `move`；处理 `snapshot` / `eat` / `you_died`
+- [x] 断线重连与被吃复活提示
 
 ### Phase 4 — 打磨
 
-- [ ] 参数调优（速度、半径公式、地图大小）
-- [ ] 基础反作弊：速度钳制、包频率限制
-- [ ] README 运行说明、Docker Compose（MySQL + server，可选）
-- [ ] 简单压测 / 多开浏览器互吃验证
+- [x] 参数调优（动态质量减速机制、动态半径缩放、金币豆拾取）
+- [x] 基础反作弊：移动方向向量长度归一化（防止超速作弊）
+- [x] Docker Compose（`docker-compose.yml`）一键启动 MySQL
+- [x] 端到端自动化测试脚本（`test_client.js`, `test_combat.js`）
 
 ### 里程碑验收
 
-1. **M1**：空服启动 + 连上 MySQL + WS echo  
-2. **M2**：两人登录进场，移动可见  
-3. **M3**：大吃小、金币变化、复活、刷新页面金币仍在  
-4. **M4**：陌生人打开 webpage 即可开玩（文档齐全）
+1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
+2. **M2**：双客户端注册登录进场，实时移动与同步：**已通过**
+3. **M3**：吃豆成长、大吃小吞噬结算、金币转移、小球复活、断线重登金币持久化：**已通过**
+4. **M4**：浏览器访问 `http://127.0.0.1:8080` 开箱即玩：**已通过**
 
 ---
 
-## 快速开始（实现后）
+## 快速开始
+
+### 1. 依赖准备
+
+- **CMake** >= 3.20
+- **C++17 编译器** (Clang / GCC)
+- **Boost** >= 1.80 (推荐通过 Homebrew 安装: `brew install boost`)
+- **OpenSSL** (推荐: `brew install openssl`)
+- **Node.js** (可选，仅运行自动化测试脚本时需要 `npm install ws`)
+
+### 2. 数据库配置（可选）
+
+如需使用 MySQL 持久化，可通过 Docker 一键启动：
+```bash
+docker compose up -d
+```
+> 若不启动 MySQL，服务器会自动降级为内存存储模式（In-Memory Store），完全不影响本地试玩与验证！
+
+### 3. 构建
 
 ```bash
-# 1. 准备 MySQL，执行 sql/schema.sql
-# 2. 复制并编辑配置
+# 1. 首次拉取子模块
+git submodule update --init --recursive
+
+# 2. 复制配置文件
 cp config.example.yaml config.yaml
 
-# 3. 构建 / 运行（依赖 fakelua）
-# cmake -S . -B build && cmake --build build --parallel
-# ./build/fakefish --config=config.yaml
-
-# 4. 浏览器打开 http://127.0.0.1:8080
+# 3. 编译
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
-（脚手架与可执行入口将在 Phase 0/1 落地。）
+### 4. 运行服务
+
+```bash
+./build/fakefish --config=config.yaml
+```
+
+服务端会启动：
+- HTTP 服务：`http://127.0.0.1:8080`（托管前端）
+- WebSocket 服务：`ws://127.0.0.1:8081`（游戏通信）
+
+### 5. 开始游玩
+
+打开现代浏览器访问：
+```
+http://127.0.0.1:8080
+```
+- 输入用户名、密码即可直接注册/登录进场。
+- 使用 **WASD** 或 **方向键** 控制金币球移动。
+- 拾取场景中的小金币豆增加金币和体型，体型大于其他玩家时可将其吞噬！
+
+### 6. 运行自动化测试
+
+```bash
+npm install ws
+node test_combat.js
+```
 
 ---
 
