@@ -19,7 +19,9 @@ local food_val = 5
 
 -- 待发送响应队列（由 NetWs.on_event 回调中入队，主循环 drain）
 -- 放在 World 模块的 upvalue 中，绕过 NetWs 回调上下文的 const 限制
-local pending_responses = {}
+-- 注意：必须在 init() 中初始化，不能在模块级别直接赋值为 {}，
+-- 否则 fakelua JIT 会将其标记为 const table，在 C++ 回调中 table.insert 会报错
+local pending_responses = nil
 
 -- 入队待发送消息（供 NetWs.on_event 回调调用）
 function enqueue_response(connid, tbl)
@@ -47,6 +49,7 @@ function init(cfg)
     players = {}
     conn_to_pid = {}
     pid_to_conn = {}
+    pending_responses = {}
     if cfg == nil then cfg = {} end
     map_width = cfg["map_width"] or 2000
     map_height = cfg["map_height"] or 2000
