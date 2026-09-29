@@ -1,4 +1,5 @@
 // FakeFish WebSocket 自动化端到端测试脚本
+const WebSocket = globalThis.WebSocket || require('ws');
 
 async function runTest() {
     console.log("=== [Test] Starting FakeFish E2E WebSocket Test ===");

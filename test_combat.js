@@ -1,4 +1,5 @@
 // FakeFish 大鱼吃小鱼真实对抗与吞噬结算测试
+const WebSocket = globalThis.WebSocket || require('ws');
 
 async function runCombatVerification() {
     console.log("=== [Combat E2E Test] Starting Hunter vs Prey Eat & Respawn Test ===");

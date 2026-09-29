@@ -66,12 +66,16 @@ jobs:
           git clone --depth 1 https://github.com/esrrhs/fakelua.git /tmp/fakelua
           cmake -S /tmp/fakelua -B /tmp/fakelua/build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_INSTALL_LIBDIR=lib \
             -DFAKELUA_BUILD_TESTS=OFF \
             -DFAKELUA_BUILD_BENCHMARKS=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           sudo cmake --build /tmp/fakelua/build --target install -j$(nproc)
+          echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/fakelua.conf
           sudo ldconfig
+          echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
 
       - name: Build fakefish
         run: |
@@ -84,6 +88,9 @@ jobs:
       - name: Prepare runtime configuration
         run: |
           cp config.example.yaml config.yaml
+          # Update config.yaml with CI MySQL credentials
+          sed -i 's/user: "root"/user: "fakefish"/' config.yaml
+          sed -i 's/password: ""/password: "changeme"/' config.yaml
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -159,12 +166,15 @@ jobs:
       - name: Install macOS dependencies
         run: |
           brew install boost openssl libevent hiredis
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix):/usr/local:${CMAKE_PREFIX_PATH:-}" >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=$(brew --prefix)/lib:/usr/local/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
 
       - name: Clone and Install fakelua
         run: |
           git clone --depth 1 https://github.com/esrrhs/fakelua.git /tmp/fakelua
           cmake -S /tmp/fakelua -B /tmp/fakelua/build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$(brew --prefix)" \
             -DFAKELUA_BUILD_TESTS=OFF \
             -DFAKELUA_BUILD_BENCHMARKS=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
