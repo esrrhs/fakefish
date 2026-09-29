@@ -18,6 +18,9 @@ local pid_to_conn = nil
 -- 必须声明为 nil 并在 init() 中赋值
 local next_bot_id = nil
 
+-- 服务器运行时长（秒），由 update(dt) 累加
+local world_time = nil
+
 local food_coins = nil
 local max_food = 80
 local food_val = 5
@@ -56,6 +59,7 @@ function init(cfg)
     pid_to_conn = {}
     pending_responses = {}
     next_bot_id = 800000
+    world_time = 0
     if cfg == nil then cfg = {} end
     map_width = cfg["map_width"] or 2000
     map_height = cfg["map_height"] or 2000
@@ -103,7 +107,8 @@ function add_player(connid, account)
         dx = 0,
         dy = 0,
         gold = gold,
-        r = r
+        r = r,
+        last_seen = os.time()
     }
 
     players[pid] = p
@@ -210,6 +215,8 @@ end
 -- dt: 秒 (e.g. 0.05)
 -- 返回事件列表: eat_events, died_events
 function update(dt)
+    world_time = world_time + dt
+
     -- 1. 拾取地面积分金币
     for pid, p in pairs(players) do
         for fi = 1, #food_coins do
@@ -330,6 +337,36 @@ function get_snapshot()
     return snap_list, food_coins
 end
 
+-- 收到该连接任何消息时刷新活跃时间（心跳超时踢人依据）
+function touch_player(connid)
+    local pid = conn_to_pid[connid]
+    if pid == nil then return end
+    local p = players[pid]
+    if p ~= nil then
+        p.last_seen = os.time()
+    end
+end
+
 function get_all_players()
     return players
+end
+
+-- 服务器统计（HTTP /api/stats 用）
+function get_stats()
+    local online = 0
+    local bots = 0
+    for pid, p in pairs(players) do
+        if p.is_bot then
+            bots = bots + 1
+        else
+            online = online + 1
+        end
+    end
+    return {
+        online = online,
+        bots = bots,
+        map_width = map_width,
+        map_height = map_height,
+        uptime_s = math.floor(world_time)
+    }
 end

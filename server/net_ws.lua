@@ -15,6 +15,9 @@ function on_event(type, connid, data, len, reason)
     elseif type == "recv" then
         if data == nil or #data == 0 then return end
 
+        -- 收到任何消息都刷新该连接的活跃时间
+        World.touch_player(connid)
+
         local ok, msg = pcall(function() return json.decode(data) end)
         if not ok or msg == nil or type_of(msg) ~= "table" then
             print("[NetWs] Invalid JSON from connid=" .. tostring(connid))
@@ -166,12 +169,34 @@ function broadcast_snapshot()
 end
 
 function notify_eat(eater_id, victim_id, gold)
+    -- 附带双方昵称供前端击杀播报直接展示（回调外的主循环上下文，读玩家表安全）
+    local all_players = World.get_all_players()
+    local eater = all_players[eater_id]
+    local victim = all_players[victim_id]
     broadcast({
         type = "eat",
         eater_id = eater_id,
         victim_id = victim_id,
+        eater_name = eater ~= nil and eater.name or tostring(eater_id),
+        victim_name = victim ~= nil and victim.name or tostring(victim_id),
         gold = gold
     })
+end
+
+-- 踢掉超过 timeout_s 秒没有任何消息的空闲连接（主循环周期调用）
+-- close_connection 会同步触发 close 事件 → 走 remove_player_by_conn 正常清场
+function kick_idle(timeout_s)
+    if ws_server_obj == nil then return end
+    if timeout_s == nil or timeout_s <= 0 then return end
+    local now = os.time()
+    local all_players = World.get_all_players()
+    for pid, p in pairs(all_players) do
+        if p.connid ~= nil and p.last_seen ~= nil and (now - p.last_seen) > timeout_s then
+            print("[NetWs] Kicking idle connection connid=" .. tostring(p.connid)
+                  .. " player=" .. tostring(p.name) .. " (idle " .. tostring(now - p.last_seen) .. "s)")
+            ws_server_obj:close_connection(p.connid)
+        end
+    end
 end
 
 function notify_died(victim_id, gold, x, y)

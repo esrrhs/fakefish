@@ -91,6 +91,8 @@
 | `get_rank` | 可选 `limit`（默认 10，最大 20） | 请求历史最佳排行 |
 | `ping` | 可选 `t` | 心跳 |
 
+> 服务器会踢掉 `game.conn_timeout_s`（默认 15 秒）内没有任何消息的空闲连接，客户端应周期发送 `ping` 保活。
+
 **S → C（服务器 → 客户端）**
 
 | type | 字段 | 说明 |
@@ -99,7 +101,7 @@
 | `login_fail` / `register_fail` | `reason` | 失败原因 |
 | `snapshot` | `players[]` | 全量或差分场景状态 |
 | `player_join` / `player_leave` | `player_id`, … | 进出场 |
-| `eat` | `eater_id`, `victim_id`, `gold` | 吃球事件（可驱动特效） |
+| `eat` | `eater_id`, `victim_id`, `eater_name`, `victim_name`, `gold` | 吃球事件（可驱动特效与击杀播报） |
 | `you_died` | `gold`, `x`, `y` | 自己被吃后复活信息 |
 | `rank` | `list[]` | 历史最佳排行（按 `best_gold` 降序，来自 MySQL） |
 | `error` | `reason` | 通用错误 |
@@ -118,7 +120,7 @@
 | `bot` | AI 机器人（觅食/追击/逃跑/游荡），复用 World 实体与 Combat 结算 |
 | `combat` | 碰撞检测与吃球结算 |
 | `net_ws` | WS 收发包、JSON 编解码、广播 |
-| `http_static` | 可选：用 `http.server` 托管前端静态页 |
+| `http_static` | 托管前端静态页 + HTTP JSON API（排行/统计） |
 
 跨帧状态使用 FakeLua **container** / NativeObject（arena reset 后 Lua table 不可长期持有）。
 
@@ -148,6 +150,24 @@ game:
 ```
 
 启动：`./fakefish --config=config.yaml`（或由 `flua` 加载入口脚本）。
+
+### 8.5 HTTP JSON API
+
+静态页之外，同一 HTTP 端口提供只读 JSON 接口（带 CORS，便于外部工具/看板接入）：
+
+| 路由 | 说明 |
+|------|------|
+| `GET /api/rank?limit=N` | 历史最佳排行（`best_gold` 降序，limit 1-20，来自 MySQL/内存缓存） |
+| `GET /api/stats` | 服务器统计：在线人数、机器人数、运行时长、地图尺寸 |
+
+示例：
+
+```bash
+curl http://127.0.0.1:8080/api/rank?limit=5
+curl http://127.0.0.1:8080/api/stats
+```
+
+未知 `/api/*` 路由返回 404 JSON；`../` 目录穿越一律 403。
 
 ### 9. 前端表现
 
@@ -196,7 +216,7 @@ fakefish/
     bot.lua               # AI 机器人（觅食/追击/逃跑/游荡）
     combat.lua            # 质量/半径公式与大鱼吃小鱼碰撞判定
     net_ws.lua            # WebSocket 路由、事件分发与 20Hz 场景快照广播
-    http_static.lua       # HTTP 静态前端文件托管
+    http_static.lua       # HTTP 静态前端托管 + JSON API（rank/stats）
   web/                    # 纯原生 HTML5/Canvas 静态前端
     index.html            # 登录界面与全屏 Canvas 画布、HUD
     game.js               # WebSocket 客户端、相机跟随、平滑渲染
@@ -245,6 +265,14 @@ fakefish/
 - [x] 安全加固：用户名限制为 2-20 位字母/数字/下划线（杜绝 SQL 注入）
 - [x] 端到端测试脚本（`test_bots.js`）并纳入 CI
 
+### Phase 6 — 可观测性与健壮性
+
+- [x] HTTP JSON API：`GET /api/rank?limit=N` 历史排行、`GET /api/stats` 在线人数/机器人数/运行时长/地图尺寸；带 CORS 便于外部看板接入
+- [x] 心跳超时踢人：`game.conn_timeout_s`（默认 15s）内无任何消息的连接被服务端主动断开，正常清理与落盘
+- [x] 击杀播报：`eat` 事件附带双方昵称，前端顶部事件流展示最近 5 条；历史排行显示击杀数
+- [x] 修复目录穿越防护：fakelua 的 `string.find` 走 ECMAScript 正则（boost::regex），Lua 模式转义 `%.` 语义不同导致旧检查失效，改用 plain 子串查找
+- [x] 端到端测试脚本（`test_api.js`）并纳入 CI
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -252,6 +280,7 @@ fakefish/
 3. **M3**：吃豆成长、大吃小吞噬结算、金币转移、小球复活、断线重登金币持久化：**已通过**
 4. **M4**：浏览器访问 `http://127.0.0.1:8080` 开箱即玩：**已通过**
 5. **M5**：机器人进场游走、历史排行跨会话持久化（MySQL）与内存降级排行：**已通过**
+6. **M6**：HTTP JSON API 可查询排行/统计、空闲连接被超时踢出、击杀播报实时展示：**已通过**
 
 ---
 

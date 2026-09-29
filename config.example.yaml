@@ -23,3 +23,4 @@ game:
   eat_ratio: 1.05          # 吞噬阈值：大球半径 >= 小球半径 * ratio
   bot_count: 3             # AI 机器人数量（0 关闭）
   bot_max_gold: 2000       # 机器人金币软上限，达到后只游荡不再主动觅食/猎杀
+  conn_timeout_s: 15       # 心跳超时秒数，超时无任何消息的连接将被踢下线
