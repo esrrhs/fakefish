@@ -1,5 +1,5 @@
 // FakeFish WebSocket 自动化端到端测试脚本
-const WebSocket = globalThis.WebSocket || require('ws');
+const WebSocket = require('ws');
 
 async function runTest() {
     console.log("=== [Test] Starting FakeFish E2E WebSocket Test ===");
@@ -11,6 +11,7 @@ async function runTest() {
     let bobId = null;
     let snapshotCount = 0;
 
+    // Wait for both connections to open
     await new Promise((resolve, reject) => {
         let openCount = 0;
         const onOpen = () => {
@@ -23,41 +24,27 @@ async function runTest() {
         ws2.onerror = (e) => reject(new Error("ws2 error: " + e.message));
     });
 
-    console.log("✔ Both WebSockets connected successfully!");
+    console.log("Both WebSockets connected successfully!");
 
-    // 1. 测试注册 Alice
-    ws1.send(JSON.stringify({
-        type: "register",
-        username: "Alice_" + Date.now().toString().slice(-4),
-        password: "password123"
-    }));
-
-    // 2. 测试注册 Bob
-    ws2.send(JSON.stringify({
-        type: "register",
-        username: "Bob_" + Date.now().toString().slice(-4),
-        password: "password123"
-    }));
-
-    // 监听消息
+    // Set up message handlers BEFORE sending any messages (prevents race condition)
     const testPromise = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
             if (aliceId && bobId && snapshotCount > 0) {
                 resolve();
             } else {
-                reject(new Error("Timeout waiting for login_ok and snapshots"));
+                reject(new Error(`Timeout waiting for login_ok and snapshots (aliceId=${aliceId}, bobId=${bobId}, snapshotCount=${snapshotCount})`));
             }
-        }, 3000);
+        }, 5000);
 
         ws1.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.type === "login_ok") {
                 aliceId = data.player_id;
-                console.log(`✔ Alice registered and entered game: ID=${aliceId}, gold=${data.gold}, map=${data.map.width}x${data.map.height}`);
+                console.log(`Alice registered and entered game: ID=${aliceId}, gold=${data.gold}, map=${data.map.width}x${data.map.height}`);
             } else if (data.type === "snapshot") {
                 snapshotCount++;
                 if (snapshotCount === 1) {
-                    console.log(`✔ Received snapshot with ${data.players.length} players online:`);
+                    console.log(`Received snapshot with ${data.players.length} players online:`);
                     for (const p of data.players) {
                         console.log(`   - Player ${p.name} (ID: ${p.id}): pos=(${p.x}, ${p.y}), gold=${p.gold}, r=${p.r}`);
                     }
@@ -73,17 +60,30 @@ async function runTest() {
             const data = JSON.parse(event.data);
             if (data.type === "login_ok") {
                 bobId = data.player_id;
-                console.log(`✔ Bob registered and entered game: ID=${bobId}, gold=${data.gold}`);
+                console.log(`Bob registered and entered game: ID=${bobId}, gold=${data.gold}`);
             }
         };
     });
 
+    // NOW send register messages (handlers are already set up)
+    ws1.send(JSON.stringify({
+        type: "register",
+        username: "Alice_" + Date.now().toString().slice(-4),
+        password: "password123"
+    }));
+
+    ws2.send(JSON.stringify({
+        type: "register",
+        username: "Bob_" + Date.now().toString().slice(-4),
+        password: "password123"
+    }));
+
     await testPromise;
 
-    // 测试移动命令
+    // Test movement commands
     ws1.send(JSON.stringify({ type: "move", dx: 1.0, dy: 0.0 }));
     ws2.send(JSON.stringify({ type: "move", dx: -1.0, dy: 0.5 }));
-    console.log("✔ Sent movement commands (dx, dy)");
+    console.log("Sent movement commands (dx, dy)");
 
     await new Promise(r => setTimeout(r, 400));
 

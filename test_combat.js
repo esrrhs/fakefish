@@ -1,5 +1,5 @@
 // FakeFish 大鱼吃小鱼真实对抗与吞噬结算测试
-const WebSocket = globalThis.WebSocket || require('ws');
+const WebSocket = require('ws');
 
 async function runCombatVerification() {
     console.log("=== [Combat E2E Test] Starting Hunter vs Prey Eat & Respawn Test ===");
@@ -12,6 +12,7 @@ async function runCombatVerification() {
     let eatEvent = null;
     let diedEvent = null;
 
+    // Wait for both connections to open
     await new Promise((resolve) => {
         let count = 0;
         const check = () => { count++; if (count === 2) resolve(); };
@@ -22,28 +23,36 @@ async function runCombatVerification() {
     const hName = "Hunter_" + Math.floor(Math.random() * 10000);
     const pName = "Prey_" + Math.floor(Math.random() * 10000);
 
-    wsHunter.send(JSON.stringify({ type: "register", username: hName, password: "123" }));
-    wsPrey.send(JSON.stringify({ type: "register", username: pName, password: "123" }));
-
-    // 等待登录
-    await new Promise((resolve) => {
-        let logins = 0;
-        wsHunter.addEventListener("message", (m) => {
-            const d = JSON.parse(m.data);
-            if (d.type === "login_ok") { hunterId = d.player_id; logins++; if (logins === 2) resolve(); }
-        });
-        wsPrey.addEventListener("message", (m) => {
-            const d = JSON.parse(m.data);
-            if (d.type === "login_ok") { preyId = d.player_id; logins++; if (logins === 2) resolve(); }
-        });
-    });
-
-    console.log(`✔ Hunter (ID: ${hunterId}) and Prey (ID: ${preyId}) logged in.`);
-
+    // Set up message handlers BEFORE sending any messages (prevents race condition)
     let hunter = null;
     let prey = null;
     let foods = [];
 
+    // Wait for login_ok from both clients
+    const loginPromise = new Promise((resolve) => {
+        let logins = 0;
+        const onLogin = () => { logins++; if (logins === 2) resolve(); };
+
+        wsHunter.addEventListener("message", (m) => {
+            const d = JSON.parse(m.data);
+            if (d.type === "login_ok") { hunterId = d.player_id; onLogin(); }
+        });
+        wsPrey.addEventListener("message", (m) => {
+            const d = JSON.parse(m.data);
+            if (d.type === "login_ok") { preyId = d.player_id; onLogin(); }
+        });
+    });
+
+    // NOW send register messages (handlers are already set up)
+    wsHunter.send(JSON.stringify({ type: "register", username: hName, password: "123" }));
+    wsPrey.send(JSON.stringify({ type: "register", username: pName, password: "123" }));
+
+    // Wait for both logins
+    await loginPromise;
+
+    console.log(`Hunter (ID: ${hunterId}) and Prey (ID: ${preyId}) logged in.`);
+
+    // Add additional listeners for snapshot and eat events
     wsHunter.addEventListener("message", (m) => {
         const d = JSON.parse(m.data);
         if (d.type === "snapshot") {
@@ -54,7 +63,7 @@ async function runCombatVerification() {
             }
         } else if (d.type === "eat") {
             eatEvent = d;
-            console.log(`🎯 [Server Event] EAT TRIGGERED! Eater: ${d.eater_id}, Victim: ${d.victim_id}, Gain: +${d.gold}`);
+            console.log(`[Server Event] EAT TRIGGERED! Eater: ${d.eater_id}, Victim: ${d.victim_id}, Gain: +${d.gold}`);
         }
     });
 
@@ -62,7 +71,7 @@ async function runCombatVerification() {
         const d = JSON.parse(m.data);
         if (d.type === "you_died") {
             diedEvent = d;
-            console.log(`💀 [Server Event] YOU_DIED TRIGGERED! Victim respawned with ${d.gold} gold at (${d.x}, ${d.y})`);
+            console.log(`[Server Event] YOU_DIED TRIGGERED! Victim respawned with ${d.gold} gold at (${d.x}, ${d.y})`);
         }
     });
 
@@ -96,7 +105,7 @@ async function runCombatVerification() {
     const p1Start = Date.now();
     while (Date.now() - p1Start < 12000) {
         if (hunter && hunter.gold >= 125) {
-            console.log(`✔ Hunter grew to ${hunter.gold} gold (radius: ${hunter.r}) > Prey (${prey ? prey.gold : 100} gold)`);
+            console.log(`Hunter grew to ${hunter.gold} gold (radius: ${hunter.r}) > Prey (${prey ? prey.gold : 100} gold)`);
             break;
         }
         await new Promise(r => setTimeout(r, 100));
@@ -119,7 +128,7 @@ async function runCombatVerification() {
     let lastLog = Date.now();
     while (Date.now() - p2Start < 25000) {
         if (eatEvent && diedEvent) {
-            console.log("✔ Phase 2 Complete: Hunter devoured Prey successfully!");
+            console.log("Phase 2 Complete: Hunter devoured Prey successfully!");
             break;
         }
         if (Date.now() - lastLog > 2000) {
