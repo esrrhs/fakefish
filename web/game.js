@@ -188,7 +188,8 @@
                 break;
 
             case "rank":
-                renderRank(msg.list || []);
+                // 空 Lua table 可能被编码成 {}（对象），视为空数组
+                renderRank(Array.isArray(msg.list) ? msg.list : []);
                 break;
 
             case "snapshot":

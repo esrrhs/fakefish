@@ -93,21 +93,19 @@ async function runBotAndRankTest() {
     ws.send(JSON.stringify({ type: "get_rank", limit: 10 }));
     await rankPromise;
 
-    if (!Array.isArray(rankMsg.list)) {
-        console.error("FAIL: rank.list is not an array");
-        process.exit(1);
-    }
-    console.log(`Rank list received: ${rankMsg.list.length} entries`);
-    for (const item of rankMsg.list) {
+    // 空 Lua table 会被 json.encode 成 {}（对象），视为空数组
+    const list = Array.isArray(rankMsg.list) ? rankMsg.list : [];
+    console.log(`Rank list received: ${list.length} entries`);
+    for (const item of list) {
         if (!item.name || typeof item.best_gold !== "number") {
             console.error("FAIL: bad rank entry: " + JSON.stringify(item));
             process.exit(1);
         }
-        console.log(`  #${rankMsg.list.indexOf(item) + 1} ${item.name} best_gold=${item.best_gold} kills=${item.kills || 0}`);
+        console.log(`  #${list.indexOf(item) + 1} ${item.name} best_gold=${item.best_gold} kills=${item.kills || 0}`);
     }
 
     // 刚注册的账号 best_gold >= 初始金币，且应出现在排行里（数据量少时）
-    const mine = rankMsg.list.find(e => e.name === name);
+    const mine = list.find(e => e.name === name);
     if (mine && mine.best_gold < 100) {
         console.error(`FAIL: fresh account best_gold should be >= 100, got ${mine.best_gold}`);
         process.exit(1);
