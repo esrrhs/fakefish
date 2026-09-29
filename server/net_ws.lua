@@ -64,9 +64,13 @@ function on_event(type, connid, data, len, reason)
 
         elseif mtype == "get_rank" then
             -- 历史排行：直接读服务端缓存（DB.tick_refresh 周期从 MySQL/内存刷新）
+            -- 响应挂到玩家记录上，主循环经 p.connid 发送（Linux 上队列 connid 路径会静默失败）
             local limit = msg["limit"] or 10
             if limit > 20 then limit = 20 end
-            World.enqueue_response(connid, { type = "rank", list = DB.get_top(limit) })
+            local p = World.get_player_by_conn(connid)
+            if p ~= nil then
+                p.pending_rank = { type = "rank", list = DB.get_top(limit) }
+            end
 
         elseif mtype == "ping" then
             World.enqueue_response(connid, { type = "pong" })
@@ -104,7 +108,7 @@ function init(cfg)
     return true
 end
 
--- 发送玩家登录响应（通过 p.connid，与 broadcast 同路径）
+-- 发送玩家暂存消息（通过 p.connid，与 broadcast 同路径）
 -- 在主循环中调用，不在 C++ 回调上下文中
 function flush_login_responses()
     if ws_server_obj == nil then return end
@@ -114,6 +118,11 @@ function flush_login_responses()
             local json_str = json.encode(p.pending_login_ok)
             ws_server_obj:send(p.connid, json_str)
             p.pending_login_ok = nil
+        end
+        if p.pending_rank ~= nil then
+            local json_str = json.encode(p.pending_rank)
+            ws_server_obj:send(p.connid, json_str)
+            p.pending_rank = nil
         end
     end
 end
