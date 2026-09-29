@@ -30,6 +30,7 @@ function read_file(filepath)
 end
 
 -- HTTP 请求派发函数（C++ 回调入口）
+-- 注意：回调上下文只能读模块状态、构造新表，不能写模块级 upvalue
 function on_request(typ, connid, req)
     if typ ~= "request" then return end
 
@@ -38,8 +39,16 @@ function on_request(typ, connid, req)
         path = "/index.html"
     end
 
+    -- JSON API 路由（"/api/stats" → action "stats"）
+    local prefix = string.sub(path, 1, 5)
+    if prefix == "/api/" then
+        return handle_api(string.sub(path, 6), req)
+    end
+
     -- 防止目录穿越
-    if string.find(path, "%.%.") ~= nil then
+    -- 注意：fakelua 的 string.find 第四参 plain=true 为纯子串查找；
+    -- 默认走 ECMAScript 正则（boost::regex），Lua 模式转义（如 %.）语义完全不同
+    if string.find(path, "..", 1, true) ~= nil then
         return {
             status = 403,
             body = "Forbidden"
@@ -66,6 +75,81 @@ function on_request(typ, connid, req)
             body = "404 Not Found: " .. path
         }
     end
+end
+
+-- ---- JSON API ----
+-- 说明：返回的 JSON 为手工拼接。账号名已限制为 [A-Za-z0-9_]、机器人名为内置固定表，
+-- 均不含需转义字符；且规避了 fakelua json.encode 空 table 产出 {} 而非 [] 的问题。
+
+local function api_json(status, body)
+    return {
+        status = status,
+        headers = {
+            ["Content-Type"] = "application/json; charset=utf-8",
+            ["Cache-Control"] = "no-cache",
+            ["Access-Control-Allow-Origin"] = "*"
+        },
+        body = body
+    }
+end
+
+local function parse_limit(query)
+    local limit = 10
+    if query ~= nil then
+        local pos = string.find(query, "limit=")
+        if pos ~= nil then
+            local raw = string.sub(query, pos + 6)
+            local num = string.match(raw, "^[0-9]+")
+            if num ~= nil then
+                limit = tonumber(num) or 10
+            end
+        end
+    end
+    if limit < 1 then limit = 1 end
+    if limit > 20 then limit = 20 end
+    return limit
+end
+
+local function handle_api(action, req)
+    -- CORS 预检
+    if req["method"] == "OPTIONS" then
+        return {
+            status = 204,
+            headers = {
+                ["Access-Control-Allow-Origin"] = "*",
+                ["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            },
+            body = ""
+        }
+    end
+
+    if action == "rank" or action == "rank/" then
+        local limit = parse_limit(req["query"])
+        local top = DB.get_top(limit)
+        local parts = {}
+        for i = 1, #top do
+            local e = top[i]
+            table.insert(parts, '{"name":"' .. tostring(e.name)
+                .. '","best_gold":' .. tostring(e.best_gold)
+                .. ',"kills":' .. tostring(e.kills or 0) .. '}')
+        end
+        local body = '{"code":0,"count":' .. tostring(#top) .. ',"list":['
+                      .. table.concat(parts, ",") .. "]}"
+
+        return api_json(200, body)
+    end
+
+    if action == "stats" or action == "stats/" then
+        local st = World.get_stats()
+        local body = '{"code":0,"online":' .. tostring(st.online)
+                     .. ',"bots":' .. tostring(st.bots)
+                     .. ',"uptime_s":' .. tostring(st.uptime_s)
+                     .. ',"map":{"width":' .. tostring(st.map_width)
+                     .. ',"height":' .. tostring(st.map_height) .. "}}"
+        return api_json(200, body)
+    end
+
+    return api_json(404, '{"code":404,"msg":"unknown api"}')
 end
 
 function init(cfg)

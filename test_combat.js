@@ -52,6 +52,12 @@ async function runCombatVerification() {
 
     console.log(`Hunter (ID: ${hunterId}) and Prey (ID: ${preyId}) logged in.`);
 
+    // 模拟真实客户端心跳，避免被服务端 conn_timeout_s 踢掉
+    const pingTimer = setInterval(() => {
+        wsHunter.send(JSON.stringify({ type: "ping" }));
+        wsPrey.send(JSON.stringify({ type: "ping" }));
+    }, 3000);
+
     // Add additional listeners for snapshot and eat events
     wsHunter.addEventListener("message", (m) => {
         const d = JSON.parse(m.data);
@@ -145,11 +151,16 @@ async function runCombatVerification() {
     }
 
     clearInterval(hunterChase);
+    clearInterval(pingTimer);
     wsHunter.close();
     wsPrey.close();
 
     if (!eatEvent || !diedEvent) {
         console.error("Combat eat not completed in timeout, will check status.");
+        process.exit(1);
+    }
+    if (typeof eatEvent.eater_name !== "string" || typeof eatEvent.victim_name !== "string") {
+        console.error("FAIL: eat event missing eater_name/victim_name: " + JSON.stringify(eatEvent));
         process.exit(1);
     }
 

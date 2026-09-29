@@ -44,6 +44,12 @@ async function runCombatTest() {
 
     console.log(`Hunter (ID: ${eaterId}) and Prey (ID: ${victimId}) in game.`);
 
+    // 模拟真实客户端心跳，避免被服务端 conn_timeout_s 踢掉
+    const pingTimer = setInterval(() => {
+        ws1.send(JSON.stringify({ type: "ping" }));
+        ws2.send(JSON.stringify({ type: "ping" }));
+    }, 3000);
+
     // 监听快照、吃球、死亡事件
     let preyPos = null;
     let hunterPos = null;
@@ -96,6 +102,7 @@ async function runCombatTest() {
     }
 
     clearInterval(chaseInterval);
+    clearInterval(pingTimer);
     ws1.close();
     ws2.close();
 

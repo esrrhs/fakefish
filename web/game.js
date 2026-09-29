@@ -198,6 +198,7 @@
 
             case "eat":
                 handleEatEvent(msg);
+                addKillFeed(msg);
                 break;
 
             case "you_died":
@@ -291,7 +292,8 @@
         rankList.innerHTML = "";
         list.forEach((item, idx) => {
             const li = document.createElement("li");
-            li.innerHTML = `<span class="lb-name">${idx + 1}. ${escapeHtml(item.name || "玩家")}</span><span class="lb-gold">${item.best_gold || 0}</span>`;
+            const stats = `${item.best_gold || 0} · ⚔${item.kills || 0}`;
+            li.innerHTML = `<span class="lb-name">${idx + 1}. ${escapeHtml(item.name || "玩家")}</span><span class="lb-gold">${stats}</span>`;
             if (item.name === myName) {
                 li.style.color = "#38bdf8";
                 li.style.fontWeight = "bold";
@@ -309,8 +311,30 @@
             addFloatingText(`+${goldGain} 金币!`, eater.x, eater.y - eater.r - 10, "#fbbf24", 20);
         }
         if (msg.eater_id === localPlayerId) {
-            showToast(`你吃掉了 ${victim ? victim.name : "小球"}，获得 ${goldGain} 金币！`, "success");
+            showToast(`你吃掉了 ${msg.victim_name || (victim ? victim.name : "小球")}，获得 ${goldGain} 金币！`, "success");
         }
+    }
+
+    // 击杀播报：顶部居中事件流，保留最近 5 条，6 秒后淡出
+    function addKillFeed(msg) {
+        const killFeed = document.getElementById("kill-feed");
+        killFeed.classList.remove("hidden");
+        const entry = document.createElement("div");
+        entry.className = "feed-entry";
+        const eaterName = msg.eater_name || `Player_${msg.eater_id}`;
+        const victimName = msg.victim_name || `Player_${msg.victim_id}`;
+        entry.innerHTML = `<span class="feed-eater">${escapeHtml(eaterName)}</span>`
+            + ` 🍽️ <span class="feed-victim">${escapeHtml(victimName)}</span>`
+            + ` <span class="feed-gold">+${msg.gold || 0}</span>`;
+        if (msg.eater_id === localPlayerId) entry.classList.add("feed-mine");
+        killFeed.appendChild(entry);
+        while (killFeed.children.length > 5) {
+            killFeed.removeChild(killFeed.firstChild);
+        }
+        setTimeout(() => {
+            entry.classList.add("feed-fade");
+            setTimeout(() => entry.remove(), 800);
+        }, 6000);
     }
 
     function getPlayerColor(id) {

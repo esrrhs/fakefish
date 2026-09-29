@@ -147,6 +147,11 @@ end
 
 -- 记击杀数
 function add_kill(username)
+    local acc = in_memory_accounts[username]
+    if acc ~= nil then
+        acc.kills = (acc.kills or 0) + 1
+    end
+
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then

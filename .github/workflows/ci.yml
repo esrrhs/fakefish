@@ -126,6 +126,10 @@ jobs:
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
 
+          # Run HTTP JSON API test (rank/stats/traversal, bot-free world)
+          echo "=== Running HTTP API E2E Test ==="
+          node test_api.js
+
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
           sleep 1
@@ -256,6 +260,10 @@ jobs:
           # Run full combat and eating verification test (bot-free world)
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
+
+          # Run HTTP JSON API test (rank/stats/traversal, bot-free world)
+          echo "=== Running HTTP API E2E Test ==="
+          node test_api.js
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true

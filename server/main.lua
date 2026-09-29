@@ -45,14 +45,23 @@ function start(config_path)
 
     local tick_ms = srv_cfg["tick_ms"] or 50
     local dt = tick_ms / 1000.0
+    local conn_timeout_s = game_cfg["conn_timeout_s"] or 15
 
     print("[Main] Server loop started: " .. tostring(1000 / tick_ms) .. "Hz (tick=" .. tostring(tick_ms) .. "ms)")
     print("[Main] Access game at: http://127.0.0.1:" .. tostring(srv_cfg["http_port"] or 8080))
 
     -- 6. 主事件循环驱动
+    local frame = 0
     while true do
+        frame = frame + 1
+
         -- 统一事件泵推进：驱动 socket IO、定时器、MySQL 等
         runtime.tick()
+
+        -- 每秒一次：踢掉心跳超时的空闲连接
+        if frame % 20 == 0 then
+            NetWs.kick_idle(conn_timeout_s)
+        end
 
         -- 发送登录响应（通过 p.connid，与 broadcast 同路径，确保跨平台一致）
         NetWs.flush_login_responses()
