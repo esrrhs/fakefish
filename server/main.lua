@@ -51,6 +51,9 @@ function start(config_path)
         -- 统一事件泵推进：驱动 socket IO、定时器、MySQL 等
         runtime.tick()
 
+        -- flush 回调中入队的消息（login_ok 等），在 tick 之外发送避免 reentrancy
+        NetWs.flush_pending()
+
         -- 物理与规则计算
         local eat_events, died_events = World.update(dt)
 
