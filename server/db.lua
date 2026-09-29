@@ -25,7 +25,8 @@ end
 -- 初始化数据库
 function init(cfg)
     ensure_inited()
-    top_cache = { list = {}, countdown = refresh_interval_ticks - 20 }
+    -- 1s 后首刷（20 ticks），之后每 5s 一次，尽快让排行缓存可用
+    top_cache = { list = {}, countdown = 20 }
 
     if cfg == nil then
         cfg = {}
@@ -219,8 +220,9 @@ function tick_refresh()
         end
     end
 
-    -- 无 MySQL：直接用内存数据刷新
+    -- 无 MySQL 或无可用连接：直接用内存数据刷新
     top_cache.list = sort_top(20)
+    print("[DB] Rank cache refreshed from memory: " .. tostring(#top_cache.list) .. " entries")
 end
 
 -- SELECT 结果回调（fakelua 按函数名调用；运行在 C++ 派发上下文）
@@ -246,6 +248,7 @@ function on_top_result(c, err, result)
     end
     if #list > 0 then
         top_cache.list = list
+        print("[DB] Rank cache refreshed from MySQL: " .. tostring(#list) .. " entries")
     end
 end
 
