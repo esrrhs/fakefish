@@ -69,9 +69,11 @@
 | `username` | VARCHAR(32) UNIQUE | 登录名 |
 | `password_hash` | VARCHAR(128) | 哈希后的密码（如 SHA256 + salt） |
 | `gold` | BIGINT | 当前金币 |
+| `best_gold` | BIGINT | 历史最高金币（排行依据） |
+| `kills` / `deaths` | INT | 累计吞噬数 / 被吞数 |
 | `created_at` / `updated_at` | DATETIME | 时间戳 |
 
-- **注册**：用户名不存在则插入，初始 `gold = initial_gold`。
+- **注册**：用户名不存在则插入（仅允许字母/数字/下划线），初始 `gold = initial_gold`。
 - **登录**：校验密码 → 建立会话 → 加载金币 → 在场景中生成球。
 - **持久化**：吃球后可节流写库；断线/正常登出时强制写回。
 
@@ -86,6 +88,7 @@
 | `register` | `username`, `password` | 注册 |
 | `login` | `username`, `password` | 登录并进场 |
 | `move` | `dx`, `dy` 或 `dir` | 移动意图（归一化方向） |
+| `get_rank` | 可选 `limit`（默认 10，最大 20） | 请求历史最佳排行 |
 | `ping` | 可选 `t` | 心跳 |
 
 **S → C（服务器 → 客户端）**
@@ -98,9 +101,10 @@
 | `player_join` / `player_leave` | `player_id`, … | 进出场 |
 | `eat` | `eater_id`, `victim_id`, `gold` | 吃球事件（可驱动特效） |
 | `you_died` | `gold`, `x`, `y` | 自己被吃后复活信息 |
+| `rank` | `list[]` | 历史最佳排行（按 `best_gold` 降序，来自 MySQL） |
 | `error` | `reason` | 通用错误 |
 
-`players[]` 元素示例：`{ id, name, x, y, gold, r }`。前端据此画圆、标金币/昵称。
+`players[]` 元素示例：`{ id, name, x, y, gold, r, bot? }`。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人。
 
 ### 7. 服务器模块划分（FakeLua）
 
@@ -108,9 +112,10 @@
 |------|------|
 | `main` | 读配置、初始化 MySQL/WS/HTTP、进入 tick 循环 |
 | `config` | 解析 YAML/TOML/INI（fakelua 已有），暴露端口、地图、公式参数 |
-| `db` | 账号查询/插入/更新金币 |
-| `auth` | 注册登录、会话绑定 `connid ↔ player` |
+| `db` | 账号查询/插入、金币与战绩（best_gold/kills/deaths）更新、历史排行查询 |
+| `auth` | 注册登录、会话绑定 `connid ↔ player`、用户名字符集校验 |
 | `world` | 玩家实体表、移动积分、边界 |
+| `bot` | AI 机器人（觅食/追击/逃跑/游荡），复用 World 实体与 Combat 结算 |
 | `combat` | 碰撞检测与吃球结算 |
 | `net_ws` | WS 收发包、JSON 编解码、广播 |
 | `http_static` | 可选：用 `http.server` 托管前端静态页 |
@@ -188,6 +193,7 @@ fakefish/
     db.lua                # MySQL 连接池与内存回退存储
     auth.lua              # SHA256 密码哈希、用户注册与鉴权
     world.lua             # 实体状态、移动积分、边界与金币豆刷新
+    bot.lua               # AI 机器人（觅食/追击/逃跑/游荡）
     combat.lua            # 质量/半径公式与大鱼吃小鱼碰撞判定
     net_ws.lua            # WebSocket 路由、事件分发与 20Hz 场景快照广播
     http_static.lua       # HTTP 静态前端文件托管
@@ -197,6 +203,7 @@ fakefish/
     style.css             # 暗色赛博霓虹风格 UI
   test_client.js          # 端到端 WebSocket 自动化测试
   test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证测试
+  test_bots.js            # AI 机器人与历史排行验证测试
   CMakeLists.txt          # 工程构建配置（Modern CMake find_package）
 ```
 
@@ -229,12 +236,22 @@ fakefish/
 - [x] Docker Compose（`docker-compose.yml`）一键启动 MySQL
 - [x] 端到端自动化测试脚本（`test_client.js`, `test_combat.js`）
 
+### Phase 5 — 世界生命感与竞技留存
+
+- [x] AI 机器人（`server/bot.lua`）：配置 `game.bot_count` 控制数量，具备觅食、追击猎物、逃离威胁、随机游荡四种行为；金币达到 `bot_max_gold` 软上限后只游荡，避免一家独大
+- [x] 机器人复用玩家实体管线：快照带 `bot: true` 标记，前端画布与排行榜显示 🤖 标识；机器人不落盘、不计战绩
+- [x] 持久化历史排行：`accounts` 表新增 `best_gold` / `kills` / `deaths` 列；每次吃球/被吃/离场实时结算落盘
+- [x] 新增 `get_rank` / `rank` 协议：异步查询 MySQL Top N（无 MySQL 时降级内存排行），前端「⭐ 历史最佳」面板每 10 秒刷新
+- [x] 安全加固：用户名限制为 2-20 位字母/数字/下划线（杜绝 SQL 注入）
+- [x] 端到端测试脚本（`test_bots.js`）并纳入 CI
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
 2. **M2**：双客户端注册登录进场，实时移动与同步：**已通过**
 3. **M3**：吃豆成长、大吃小吞噬结算、金币转移、小球复活、断线重登金币持久化：**已通过**
 4. **M4**：浏览器访问 `http://127.0.0.1:8080` 开箱即玩：**已通过**
+5. **M5**：机器人进场游走、历史排行跨会话持久化（MySQL）与内存降级排行：**已通过**
 
 ---
 
@@ -254,6 +271,11 @@ fakefish/
 docker compose up -d
 ```
 > 若不启动 MySQL，服务器会自动降级为内存存储模式（In-Memory Store），完全不影响本地试玩与验证！
+
+> ⚠️ Phase 5 起 `accounts` 表新增 `best_gold` / `kills` / `deaths` 列。已有旧库需手动迁移：
+> ```sql
+> ALTER TABLE accounts ADD COLUMN best_gold BIGINT NOT NULL DEFAULT 0, ADD COLUMN kills INT NOT NULL DEFAULT 0, ADD COLUMN deaths INT NOT NULL DEFAULT 0;
+> ```
 
 ### 3. 构建
 
@@ -291,6 +313,7 @@ http://127.0.0.1:8080
 ```bash
 npm install ws
 node test_combat.js
+node test_bots.js
 ```
 
 ---

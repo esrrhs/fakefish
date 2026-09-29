@@ -31,6 +31,9 @@ function start(config_path)
     -- 3. 初始化游戏世界与规则
     World.init(game_cfg)
 
+    -- 3.5 生成 AI 机器人
+    Bot.init(game_cfg)
+
     -- 4. 启动 WebSocket 游戏服务
     if not NetWs.init(srv_cfg) then
         print("[Main] Failed to start WebSocket server! Terminating.")
@@ -56,6 +59,9 @@ function start(config_path)
 
         -- flush 其他暂存消息（register_fail, pong 等）
         NetWs.flush_pending()
+
+        -- 机器人 AI 决策（写移动意图，物理结算仍在 World.update）
+        Bot.update(dt)
 
         -- 物理与规则计算
         local eat_events, died_events = World.update(dt)

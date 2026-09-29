@@ -32,6 +32,7 @@
 
     const leaderboard = document.getElementById("leaderboard");
     const leaderboardList = document.getElementById("leaderboard-list");
+    const rankList = document.getElementById("rank-list");
     const notificationBox = document.getElementById("notification-box");
 
     // 控制输入状态
@@ -175,6 +176,7 @@
                 leaderboard.classList.remove("hidden");
                 hudName.innerText = myName;
                 showToast(`欢迎进入竞技场，${myName}！`, "success");
+                requestRank();
                 break;
 
             case "login_fail":
@@ -183,6 +185,10 @@
                 authError.classList.remove("hidden");
                 btnSubmit.disabled = false;
                 btnSubmit.innerText = authMode === "login" ? "进入竞技场" : "注册并进场";
+                break;
+
+            case "rank":
+                renderRank(msg.list || []);
                 break;
 
             case "snapshot":
@@ -225,6 +231,7 @@
                     y: p.y,
                     gold: p.gold,
                     r: p.r,
+                    bot: !!p.bot,
                     color: p.color || getPlayerColor(p.id)
                 };
                 players.set(p.id, existing);
@@ -235,6 +242,7 @@
                 existing.r = p.r;
                 if (p.name) existing.name = p.name;
                 if (p.color) existing.color = p.color;
+                existing.bot = !!p.bot;
             }
 
             // 更新自己 HUD
@@ -261,12 +269,33 @@
         leaderboardList.innerHTML = "";
         sorted.forEach((item, idx) => {
             const li = document.createElement("li");
-            li.innerHTML = `<span class="lb-name">${idx + 1}. ${escapeHtml(item.name || "玩家")}</span><span class="lb-gold">${item.gold}</span>`;
+            const displayName = (item.bot ? "🤖 " : "") + (item.name || "玩家");
+            li.innerHTML = `<span class="lb-name">${idx + 1}. ${escapeHtml(displayName)}</span><span class="lb-gold">${item.gold}</span>`;
             if (item.id === localPlayerId) {
                 li.style.color = "#38bdf8";
                 li.style.fontWeight = "bold";
             }
             leaderboardList.appendChild(li);
+        });
+    }
+
+    // 历史最佳排行（MySQL 持久化，每 10 秒刷新）
+    function requestRank() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "get_rank", limit: 10 }));
+        }
+    }
+
+    function renderRank(list) {
+        rankList.innerHTML = "";
+        list.forEach((item, idx) => {
+            const li = document.createElement("li");
+            li.innerHTML = `<span class="lb-name">${idx + 1}. ${escapeHtml(item.name || "玩家")}</span><span class="lb-gold">${item.best_gold || 0}</span>`;
+            if (item.name === myName) {
+                li.style.color = "#38bdf8";
+                li.style.fontWeight = "bold";
+            }
+            rankList.appendChild(li);
         });
     }
 
@@ -363,12 +392,18 @@
         }
     }
 
-    // 维持心跳
+    // 维持心跳与历史排行刷新
     setInterval(() => {
         if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "ping" }));
         }
     }, 5000);
+
+    setInterval(() => {
+        if (isConnected && localPlayerId) {
+            requestRank();
+        }
+    }, 10000);
 
     // 渲染主循环
     function renderLoop() {
@@ -495,7 +530,7 @@
         ctx.font = `bold ${Math.max(12, Math.min(18, p.r * 0.5))}px sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(p.name, p.x, p.y - p.r - 12);
+        ctx.fillText(p.bot ? `🤖 ${p.name}` : p.name, p.x, p.y - p.r - 12);
 
         // 绘制球体中心的金币数值
         ctx.fillStyle = "#fbbf24";

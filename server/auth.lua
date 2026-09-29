@@ -8,9 +8,20 @@ function hash_password(password)
     return crypto.sha256(password .. ":" .. SALT)
 end
 
+-- 用户名只允许字母/数字/下划线，杜绝 SQL 注入与特殊字符问题
+local function is_valid_username(username)
+    if username == nil or #username < 2 or #username > 20 then return false end
+    for i = 1, #username do
+        local b = string.byte(username, i)
+        local ok = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95
+        if not ok then return false end
+    end
+    return true
+end
+
 function handle_register(username, password)
-    if username == nil or #username < 2 then
-        return false, "用户名至少需要2个字符"
+    if not is_valid_username(username) then
+        return false, "用户名需为2-20位字母、数字或下划线"
     end
     if password == nil or #password < 3 then
         return false, "密码至少需要3个字符"
