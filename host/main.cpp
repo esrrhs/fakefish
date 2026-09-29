@@ -52,6 +52,7 @@ int main(int argc, char **argv) {
         "server/db.lua",
         "server/auth.lua",
         "server/world.lua",
+        "server/bot.lua",
         "server/net_ws.lua",
         "server/http_static.lua",
         script_path

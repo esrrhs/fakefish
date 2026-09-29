@@ -78,7 +78,10 @@ function register(username, password_hash, initial_gold)
         id = db_state.next_id,
         username = username,
         password_hash = password_hash,
-        gold = initial_gold
+        gold = initial_gold,
+        best_gold = initial_gold,
+        kills = 0,
+        deaths = 0
     }
     in_memory_accounts[username] = account
 
@@ -86,8 +89,9 @@ function register(username, password_hash, initial_gold)
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then
-            local sql = "INSERT INTO accounts (username, password_hash, gold) VALUES ('" 
-                        .. username .. "', '" .. password_hash .. "', " .. tostring(initial_gold) .. ")"
+            local sql = "INSERT INTO accounts (username, password_hash, gold, best_gold) VALUES ('"
+                        .. username .. "', '" .. password_hash .. "', " .. tostring(initial_gold)
+                        .. ", " .. tostring(initial_gold) .. ")"
             conn:query(sql, function(c, err, result)
                 pool:release(conn)
                 if err and #err > 0 then
@@ -113,17 +117,22 @@ function get_account(username)
     return false, "用户不存在"
 end
 
--- 更新金币数据
+-- 更新金币数据（同时维护历史最高金币 best_gold）
 function update_gold(username, account_id, gold)
     local acc = in_memory_accounts[username]
     if acc ~= nil then
         acc.gold = gold
+        if acc.best_gold == nil or gold > acc.best_gold then
+            acc.best_gold = gold
+        end
     end
 
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then
-            local sql = "UPDATE accounts SET gold = " .. tostring(gold) .. " WHERE id = " .. tostring(account_id)
+            local sql = "UPDATE accounts SET gold = " .. tostring(gold)
+                        .. ", best_gold = GREATEST(IFNULL(best_gold, 0), " .. tostring(gold) .. ")"
+                        .. " WHERE id = " .. tostring(account_id)
             conn:query(sql, function(c, err, result)
                 pool:release(conn)
                 if err and #err > 0 then
@@ -132,4 +141,103 @@ function update_gold(username, account_id, gold)
             end)
         end
     end
+end
+
+-- 记击杀数
+function add_kill(account_id)
+    if pool ~= nil then
+        local conn = pool:acquire()
+        if conn ~= nil then
+            local sql = "UPDATE accounts SET kills = kills + 1 WHERE id = " .. tostring(account_id)
+            conn:query(sql, function(c, err, result)
+                pool:release(conn)
+                if err and #err > 0 then
+                    print("[DB] Async UPDATE error: " .. tostring(err))
+                end
+            end)
+        end
+    end
+end
+
+-- 记死亡数
+function add_death(account_id)
+    if pool ~= nil then
+        local conn = pool:acquire()
+        if conn ~= nil then
+            local sql = "UPDATE accounts SET deaths = deaths + 1 WHERE id = " .. tostring(account_id)
+            conn:query(sql, function(c, err, result)
+                pool:release(conn)
+                if err and #err > 0 then
+                    print("[DB] Async UPDATE error: " .. tostring(err))
+                end
+            end)
+        end
+    end
+end
+
+-- 内存模式排行：简单插入排序（fakelua 不保证 table.sort 可用，手写稳妥）
+local function sort_top(limit)
+    local items = {}
+    for _, acc in pairs(in_memory_accounts) do
+        table.insert(items, {
+            name = acc.username,
+            best_gold = acc.best_gold or acc.gold or 0,
+            kills = acc.kills or 0
+        })
+    end
+
+    local sorted = {}
+    for i = 1, #items do
+        local it = items[i]
+        local pos = #sorted + 1
+        for j = 1, #sorted do
+            if sorted[j].best_gold < it.best_gold then
+                pos = j
+                break
+            end
+        end
+        table.insert(sorted, pos, it)
+    end
+
+    local top = {}
+    for i = 1, #sorted do
+        if i > limit then break end
+        table.insert(top, sorted[i])
+    end
+    return top
+end
+
+-- 查询历史排行 top N（按 best_gold 降序）
+-- 结果通过 World.enqueue_response 回给指定连接（回调是 C++ 上下文，不能改模块 upvalue）
+function query_top(limit, connid)
+    if pool ~= nil then
+        local conn = pool:acquire()
+        if conn ~= nil then
+            local sql = "SELECT username, best_gold, kills FROM accounts ORDER BY best_gold DESC, kills DESC LIMIT "
+                        .. tostring(limit)
+            conn:query(sql, function(c, err, result)
+                pool:release(conn)
+                local list = {}
+                -- SELECT 结果格式: result[1]=true, result[2]=列信息, result[3]=行表（值均为字符串）
+                if err == nil and result ~= nil and result[1] == true and result[3] ~= nil then
+                    local rows = result[3]
+                    for i = 1, #rows do
+                        local row = rows[i]
+                        table.insert(list, {
+                            name = tostring(row[1]),
+                            best_gold = tonumber(row[2]) or 0,
+                            kills = tonumber(row[3]) or 0
+                        })
+                    end
+                end
+                if #list == 0 then
+                    list = sort_top(limit)
+                end
+                World.enqueue_response(connid, { type = "rank", list = list })
+            end)
+            return
+        end
+    end
+
+    World.enqueue_response(connid, { type = "rank", list = sort_top(limit) })
 end

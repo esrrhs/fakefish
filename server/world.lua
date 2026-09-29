@@ -13,6 +13,11 @@ local players = nil
 local conn_to_pid = nil
 local pid_to_conn = nil
 
+-- 机器人 ID 段（与 MySQL 自增账号 ID 区隔）
+-- 注意：不能在模块级赋常量初值（fakelua JIT 会将全常量赋值的标量标记为 const），
+-- 必须声明为 nil 并在 init() 中赋值
+local next_bot_id = nil
+
 local food_coins = nil
 local max_food = 80
 local food_val = 5
@@ -50,6 +55,7 @@ function init(cfg)
     conn_to_pid = {}
     pid_to_conn = {}
     pending_responses = {}
+    next_bot_id = 800000
     if cfg == nil then cfg = {} end
     map_width = cfg["map_width"] or 2000
     map_height = cfg["map_height"] or 2000
@@ -68,6 +74,10 @@ function get_map_info()
         width = map_width,
         height = map_height
     }
+end
+
+function get_foods()
+    return food_coins
 end
 
 function get_random_spawn()
@@ -101,6 +111,33 @@ function add_player(connid, account)
     pid_to_conn[pid] = connid
 
     print("[World] Player " .. account.username .. " (ID: " .. tostring(pid) .. ") joined the game.")
+    return p
+end
+
+-- 机器人进场（无连接，仅世界内实体；不进 conn 映射，不落盘）
+function add_bot(name)
+    local pid = next_bot_id
+    next_bot_id = next_bot_id + 1
+    local spawn_x, spawn_y = get_random_spawn()
+
+    local p = {
+        id = pid,
+        connid = nil,
+        name = name,
+        x = spawn_x,
+        y = spawn_y,
+        dx = 0,
+        dy = 0,
+        gold = initial_gold,
+        r = Combat.calc_radius(initial_gold, radius_base, radius_k),
+        is_bot = true,
+        ai_timer = 0,
+        ai_dx = 0,
+        ai_dy = 0
+    }
+
+    players[pid] = p
+    print("[World] Bot " .. name .. " (ID: " .. tostring(pid) .. ") joined the game.")
     return p
 end
 
@@ -155,6 +192,18 @@ end
 
 function get_conn_by_pid(pid)
     return pid_to_conn[pid]
+end
+
+-- 吞噬结算落盘（机器人不落盘、不计战绩）
+function persist_settlement(eater, victim)
+    if not eater.is_bot then
+        DB.update_gold(eater.name, eater.id, eater.gold)
+        DB.add_kill(eater.id)
+    end
+    if not victim.is_bot then
+        DB.update_gold(victim.name, victim.id, victim.gold)
+        DB.add_death(victim.id)
+    end
 end
 
 -- 逻辑帧更新
@@ -233,8 +282,7 @@ function update(dt)
                         table.insert(eat_events, { eater_id = p1.id, victim_id = p2.id, gold = eaten_gold })
                         table.insert(died_events, { victim_id = p2.id, gold = p2.gold, x = p2.x, y = p2.y })
 
-                        DB.update_gold(p1.name, p1.id, p1.gold)
-                        DB.update_gold(p2.name, p2.id, p2.gold)
+                        persist_settlement(p1, p2)
 
                     elseif res == 2 then
                         -- p2 吃掉 p1
@@ -254,8 +302,7 @@ function update(dt)
                         table.insert(eat_events, { eater_id = p2.id, victim_id = p1.id, gold = eaten_gold })
                         table.insert(died_events, { victim_id = p1.id, gold = p1.gold, x = p1.x, y = p1.y })
 
-                        DB.update_gold(p1.name, p1.id, p1.gold)
-                        DB.update_gold(p2.name, p2.id, p2.gold)
+                        persist_settlement(p2, p1)
                     end
                 end
             end
@@ -269,14 +316,16 @@ end
 function get_snapshot()
     local snap_list = {}
     for pid, p in pairs(players) do
-        table.insert(snap_list, {
+        local entry = {
             id = p.id,
             name = p.name,
             x = math.floor(p.x * 10) / 10,
             y = math.floor(p.y * 10) / 10,
             gold = p.gold,
             r = math.floor(p.r * 10) / 10
-        })
+        }
+        if p.is_bot then entry.bot = true end
+        table.insert(snap_list, entry)
     end
     return snap_list, food_coins
 end

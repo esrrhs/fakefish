@@ -62,8 +62,11 @@ async function runCombatVerification() {
                 if (p.id === preyId) prey = p;
             }
         } else if (d.type === "eat") {
-            eatEvent = d;
-            console.log(`[Server Event] EAT TRIGGERED! Eater: ${d.eater_id}, Victim: ${d.victim_id}, Gain: +${d.gold}`);
+            // 只关心猎人发动的吞噬（机器人也会捕猎，不能算数）
+            if (d.eater_id === hunterId) {
+                eatEvent = d;
+                console.log(`[Server Event] EAT TRIGGERED! Eater: ${d.eater_id}, Victim: ${d.victim_id}, Gain: +${d.gold}`);
+            }
         }
     });
 

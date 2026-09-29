@@ -124,6 +124,10 @@ jobs:
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
 
+          # Run bots and persistent rank test
+          echo "=== Running Bots & Rank E2E Test ==="
+          node test_bots.js
+
           # Kill server
           kill $SERVER_PID || true
 
@@ -224,6 +228,10 @@ jobs:
           # Run full combat and eating verification test
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
+
+          # Run bots and persistent rank test
+          echo "=== Running Bots & Rank E2E Test ==="
+          node test_bots.js
 
           # Kill server
           kill $SERVER_PID || true

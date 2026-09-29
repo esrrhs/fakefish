@@ -20,3 +20,7 @@ Thumbs.db
 # Secrets / local
 .env
 *.pem
+node_modules/
+package-lock.json
+server.log
+.workbuddy-ai/
