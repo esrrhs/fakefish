@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+jobs:
+  test-linux:
+    name: Build & Test (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: fakefish
+          MYSQL_USER: fakefish
+          MYSQL_PASSWORD: changeme
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout fakefish
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-fakefish
+          max-size: 2G
+
+      - name: Cache CPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            cpm-${{ runner.os }}-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libssl-dev libevent-dev libhiredis-dev default-libmysqlclient-dev default-mysql-client
+
+      - name: Initialize MySQL database schema
+        run: |
+          mysql -h 127.0.0.1 -u fakefish -pchangeme fakefish < sql/schema.sql
+
+      - name: Clone and Install fakelua
+        run: |
+          git clone --depth 1 https://github.com/esrrhs/fakelua.git /tmp/fakelua
+          cmake -S /tmp/fakelua -B /tmp/fakelua/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFAKELUA_BUILD_TESTS=OFF \
+            -DFAKELUA_BUILD_BENCHMARKS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          sudo cmake --build /tmp/fakelua/build --target install -j$(nproc)
+          sudo ldconfig
+
+      - name: Build fakefish
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build -j$(nproc)
+
+      - name: Prepare runtime configuration
+        run: |
+          cp config.example.yaml config.yaml
+          npm install
+
+      - name: Run fakefish server & E2E self-test
+        run: |
+          ./build/fakefish --config=config.yaml > server.log 2>&1 &
+          SERVER_PID=$!
+          echo "Server started with PID: $SERVER_PID"
+
+          # Wait for HTTP server to become ready
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
+              echo "Server is ready after $i seconds!"
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ $READY -ne 1 ]; then
+            echo "Server failed to start within 30s. Log output:"
+            cat server.log
+            exit 1
+          fi
+
+          # Run client communication test
+          echo "=== Running WebSocket Client E2E Test ==="
+          node test_client.js
+
+          # Run full combat and eating verification test
+          echo "=== Running Combat E2E Test ==="
+          node test_combat.js
+
+          # Kill server
+          kill $SERVER_PID || true
+
+      - name: Dump server log on failure
+        if: failure()
+        run: |
+          if [ -f server.log ]; then
+            echo "=== Server Output ==="
+            cat server.log
+          fi
+
+  test-macos:
+    name: Build & Test (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout fakefish
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-fakefish
+          max-size: 2G
+
+      - name: Cache CPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            cpm-${{ runner.os }}-
+
+      - name: Install macOS dependencies
+        run: |
+          brew install boost openssl libevent hiredis
+
+      - name: Clone and Install fakelua
+        run: |
+          git clone --depth 1 https://github.com/esrrhs/fakelua.git /tmp/fakelua
+          cmake -S /tmp/fakelua -B /tmp/fakelua/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFAKELUA_BUILD_TESTS=OFF \
+            -DFAKELUA_BUILD_BENCHMARKS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          sudo cmake --build /tmp/fakelua/build --target install -j$(sysctl -n hw.logicalcpu)
+
+      - name: Build fakefish
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build -j$(sysctl -n hw.logicalcpu)
+
+      - name: Prepare runtime configuration
+        run: |
+          cp config.example.yaml config.yaml
+          npm install
+
+      - name: Run fakefish server & E2E self-test
+        run: |
+          ./build/fakefish --config=config.yaml > server.log 2>&1 &
+          SERVER_PID=$!
+          echo "Server started with PID: $SERVER_PID"
+
+          # Wait for HTTP server to become ready
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
+              echo "Server is ready after $i seconds!"
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ $READY -ne 1 ]; then
+            echo "Server failed to start within 30s. Log output:"
+            cat server.log
+            exit 1
+          fi
+
+          # Run client communication test
+          echo "=== Running WebSocket Client E2E Test ==="
+          node test_client.js
+
+          # Run full combat and eating verification test
+          echo "=== Running Combat E2E Test ==="
+          node test_combat.js
+
+          # Kill server
+          kill $SERVER_PID || true
+
+      - name: Dump server log on failure
+        if: failure()
+        run: |
+          if [ -f server.log ]; then
+            echo "=== Server Output ==="
+            cat server.log
+          fi
