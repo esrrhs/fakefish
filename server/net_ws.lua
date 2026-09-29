@@ -3,12 +3,10 @@ package "NetWs"
 local ws_server_obj = nil
 local ws_port = 8081
 
--- 待发送消息队列：on_event 回调（C++调Lua）中不能直接 ws_server_obj:send()，
--- 因为部分平台（Linux）的 WebSocket 实现在回调上下文中 send 会被静默丢弃。
--- 改为在回调中入队，主循环 tick() 后统一 flush。
-local pending_sends = {}
-
 -- WebSocket 事件分发（C++ 回调入口）
+-- 注意：在此回调中不能修改本模块的 local upvalue（fakelua const 限制），
+-- 也不能直接 ws_server_obj:send()（Linux 上静默丢弃）。
+-- 需要发送的消息通过 World 模块暂存，主循环 flush。
 function on_event(type, connid, data, len, reason)
     if type == "conn" then
         print("[NetWs] Client connected, connid=" .. tostring(connid))
@@ -37,9 +35,9 @@ function on_event(type, connid, data, len, reason)
                     gold = p.gold,
                     map = World.get_map_info()
                 }
-                queue_send(connid, resp)
+                World.enqueue_response(connid, resp)
             else
-                queue_send(connid, { type = "register_fail", reason = tostring(res) })
+                World.enqueue_response(connid, { type = "register_fail", reason = tostring(res) })
             end
 
         elseif mtype == "login" then
@@ -54,9 +52,9 @@ function on_event(type, connid, data, len, reason)
                     gold = p.gold,
                     map = World.get_map_info()
                 }
-                queue_send(connid, resp)
+                World.enqueue_response(connid, resp)
             else
-                queue_send(connid, { type = "login_fail", reason = tostring(res) })
+                World.enqueue_response(connid, { type = "login_fail", reason = tostring(res) })
             end
 
         elseif mtype == "move" then
@@ -65,7 +63,7 @@ function on_event(type, connid, data, len, reason)
             World.set_player_move(connid, dx, dy)
 
         elseif mtype == "ping" then
-            queue_send(connid, { type = "pong" })
+            World.enqueue_response(connid, { type = "pong" })
         end
 
     elseif type == "close" then
@@ -100,19 +98,14 @@ function init(cfg)
     return true
 end
 
--- 入队待发送消息（用于回调上下文）
-function queue_send(connid, tbl)
-    table.insert(pending_sends, { connid = connid, tbl = tbl })
-end
-
--- flush 所有待发送消息（在主循环 tick() 之后调用）
+-- flush World 中暂存的消息（在主循环 tick() 之后调用，此时不在 C++ 回调上下文中）
 function flush_pending()
-    if #pending_sends == 0 then return end
-    for i = 1, #pending_sends do
-        local item = pending_sends[i]
+    local responses = World.drain_responses()
+    if responses == nil then return end
+    for i = 1, #responses do
+        local item = responses[i]
         send(item.connid, item.tbl)
     end
-    pending_sends = {}
 end
 
 function send(connid, tbl)

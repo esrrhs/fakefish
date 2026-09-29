@@ -17,6 +17,23 @@ local food_coins = nil
 local max_food = 80
 local food_val = 5
 
+-- 待发送响应队列（由 NetWs.on_event 回调中入队，主循环 drain）
+-- 放在 World 模块的 upvalue 中，绕过 NetWs 回调上下文的 const 限制
+local pending_responses = {}
+
+-- 入队待发送消息（供 NetWs.on_event 回调调用）
+function enqueue_response(connid, tbl)
+    table.insert(pending_responses, { connid = connid, tbl = tbl })
+end
+
+-- 取出并清空待发送队列（供 NetWs.flush_pending 主循环调用）
+function drain_responses()
+    if #pending_responses == 0 then return nil end
+    local result = pending_responses
+    pending_responses = {}
+    return result
+end
+
 function spawn_foods()
     food_coins = {}
     for i = 1, max_food do
