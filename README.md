@@ -88,6 +88,7 @@
 | `register` | `username`, `password` | 注册 |
 | `login` | `username`, `password` | 登录并进场 |
 | `move` | `dx`, `dy` 或 `dir` | 移动意图（归一化方向） |
+| `split` | 无 | 分裂：每个达条件的细胞分出一半，新细胞沿当前方向弹出 |
 | `get_rank` | 可选 `limit`（默认 10，最大 20） | 请求历史最佳排行 |
 | `ping` | 可选 `t` | 心跳 |
 
@@ -109,7 +110,7 @@
 | `rank` | `list[]` | 历史最佳排行（按 `best_gold` 降序，来自 MySQL） |
 | `error` | `reason` | 通用错误 |
 
-`players[]` 元素示例：`{ id, name, x, y, gold, r, bot?, fx? }`。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人，`fx: speed/shield/magnet` 表示道具特效生效中。
+`players[]` 元素示例：`{ id, cell, name, x, y, gold, r, bot?, fx? }`（cell 为细胞序号，每名玩家可有多条）。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人，`fx: speed/shield/magnet` 表示道具特效生效中。
 
 ### 7. 服务器模块划分（FakeLua）
 
@@ -230,6 +231,7 @@ fakefish/
   test_powerup.js         # 道具拾取与特效验证测试
   test_feast.js           # 金币雨世界事件验证测试
   test_zone.js            # 动态安全区收缩与圈外伤害验证测试
+  test_split.js           # 分裂/合体机制验证测试
   CMakeLists.txt          # 工程构建配置（Modern CMake find_package）
 ```
 
@@ -306,6 +308,15 @@ fakefish/
 - [x] 端到端测试脚本（`test_zone.js`）并纳入 CI（CI 中收缩/保持节奏被 sed 调快至 12s/6s）
 - [x] 修复 fakelua codegen bug：原生 while 条件里的 `#t` 被求值一次复用导致越界（详见 docs/fakelua-pitfalls.md P1-9）
 
+### Phase 10 — 分裂球
+
+- [x] 玩家由多个细胞组成：发送 `split`（默认空格键）后，每个细胞分出一半金币、新细胞沿当前方向高速弹出；受 `split_max_cells`（默认 8）与 `split_min_gold` 限制
+- [x] 同体细胞互不相吃；分裂冷却 `merge_cooldown_s`（默认 12s）结束后，细胞间产生温和吸附力自动靠拢，交叠即合体（金币加权取中心）
+- [x] 细胞可被**部分吞噬**：被吃掉一个细胞不判死亡，仍可继续操作；全部细胞被吃才整体复活（eat 事件带 `full`/`partial`）
+- [x] 快照 `players[]` 每个细胞一条、带 `cell` 序号；前端 HUD 金币按全部细胞求和，排行榜按玩家聚合，相机跟随细胞质心
+- [x] Bot AI：猎物很近且优势明显时主动分裂扑杀，冷却后经吸附自动合体
+- [x] 端到端测试脚本（`test_split.js`）并纳入 CI
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -317,6 +328,7 @@ fakefish/
 7. **M7**：三种道具拾取生效与过期、护盾阻断吞噬、快照/事件同步、Bot 主动拾取：**已通过**
 8. **M8**：timer 心跳驱动排行刷新与金币雨、奖励豆可拾取且不重生、事件横幅同步：**已通过**
 9. **M9**：安全区周期性收缩与重置、圈外持续掉金币、快照/事件同步、Bot 主动向圈心规避：**已通过**
+10. **M10**：细胞分裂弹出、部分吞噬、冷却后吸附合体、多细胞 HUD/排行榜/相机：**已通过**
 
 ---
 

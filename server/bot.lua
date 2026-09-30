@@ -45,49 +45,77 @@ end
 local function decide(p)
     p.ai_timer = decision_min + math.random() * (decision_max - decision_min)
 
-    -- 0) 安全区优先：球心在圈外、或距圈边不足自身半径+余量 → 朝圈心移动
+    -- 自身最大/最小细胞与总金币
+    local my_big = p.parts[1]
+    local my_small = p.parts[1]
+    local my_total = 0
+    for k = 1, #p.parts do
+        local c = p.parts[k]
+        my_total = my_total + c.gold
+        if c.r > my_big.r then my_big = c end
+        if c.r < my_small.r then my_small = c end
+    end
+
+    -- 0) 安全区优先：任一细胞贴近/超出圈边 → 该细胞朝圈心移动
     local zone = World.get_zone_info()
     if zone ~= nil then
-        local zd = dist(p.x, p.y, zone.x, zone.y)
-        if zd > zone.r - (p.r + 40) then
-            if zd < 1 then zd = 1 end
-            p.ai_dx = (zone.x - p.x) / zd
-            p.ai_dy = (zone.y - p.y) / zd
-            return
+        for k = 1, #p.parts do
+            local c = p.parts[k]
+            local zd = dist(c.x, c.y, zone.x, zone.y)
+            if zd > zone.r - (c.r + 40) then
+                if zd < 1 then zd = 1 end
+                p.ai_dx = (zone.x - c.x) / zd
+                p.ai_dy = (zone.y - c.y) / zd
+                return
+            end
         end
     end
 
     -- 已吃撑的机器人不再主动觅食/猎杀，只游荡，避免一家独大
-    if p.gold >= bot_max_gold then
+    if my_total >= bot_max_gold then
         local a = math.random() * 6.28318
         p.ai_dx = math.cos(a)
         p.ai_dy = math.sin(a)
         return
     end
 
-    local players = World.get_all_players()
+    local all = World.get_all_players()
 
-    -- 1) 威胁优先：附近有能吃掉自己的大球 → 远离它
+    -- 1) 威胁/猎物按细胞判定：对方最大细胞能吃我的最小细胞 → 威胁；
+    --    我的最大细胞能吃对方最小细胞 → 猎物
     local threat = nil
     local threat_dist = sight_player
     local prey = nil
     local prey_dist = sight_player
-    for oid, other in pairs(players) do
+    local prey_total_gold = 0
+    for oid, other in pairs(all) do
         if other.id ~= p.id then
-            local d = dist(p.x, p.y, other.x, other.y)
-            if d < sight_player then
-                -- 对方金币严格更大且半径满足吞噬比 → 是威胁
-                if other.gold > p.gold and other.r >= p.r * 1.05 then
-                    if d < threat_dist then
-                        threat = other
-                        threat_dist = d
-                    end
-                -- 自己能吃掉对方（半径满足吞噬比）→ 是猎物
-                elseif p.r >= other.r * 1.05 then
-                    if d < prey_dist then
-                        prey = other
-                        prey_dist = d
-                    end
+            local obig = other.parts[1]
+            local osmall = other.parts[1]
+            for k = 1, #other.parts do
+                local oc = other.parts[k]
+                if oc.r > obig.r then obig = oc end
+                if oc.r < osmall.r then osmall = oc end
+            end
+
+            local td = dist(my_small.x, my_small.y, obig.x, obig.y)
+            if td < sight_player and obig.gold > my_small.gold
+               and obig.r >= my_small.r * 1.05 then
+                if td < threat_dist then
+                    threat = obig
+                    threat_dist = td
+                end
+            end
+
+            local pd = dist(my_big.x, my_big.y, osmall.x, osmall.y)
+            if pd < sight_player and my_big.gold > osmall.gold
+               and my_big.r >= osmall.r * 1.05 then
+                if pd < prey_dist then
+                    prey = osmall
+                    prey_dist = pd
+                    local ptot = 0
+                    for k = 1, #other.parts do ptot = ptot + other.parts[k].gold end
+                    prey_total_gold = ptot
                 end
             end
         end
@@ -96,17 +124,20 @@ local function decide(p)
     if threat ~= nil and (threat_dist < prey_dist or prey == nil) then
         local d = threat_dist
         if d < 1 then d = 1 end
-        p.ai_dx = (p.x - threat.x) / d
-        p.ai_dy = (p.y - threat.y) / d
+        p.ai_dx = (my_small.x - threat.x) / d
+        p.ai_dy = (my_small.y - threat.y) / d
         return
     end
 
-    -- 2) 有可吞噬的猎物 → 追击
+    -- 2) 有可吞噬的猎物 → 追击；距离很近且优势明显时分裂扑杀
     if prey ~= nil then
         local d = prey_dist
         if d < 1 then d = 1 end
-        p.ai_dx = (prey.x - p.x) / d
-        p.ai_dy = (prey.y - p.y) / d
+        p.ai_dx = (prey.x - my_big.x) / d
+        p.ai_dy = (prey.y - my_big.y) / d
+        if prey_dist < 250 and my_total > prey_total_gold * 1.6 then
+            p.pending_split = true
+        end
         return
     end
 
@@ -116,7 +147,7 @@ local function decide(p)
     local powerups = World.get_powerups()
     for i = 1, #powerups do
         local pw = powerups[i]
-        local d = dist(p.x, p.y, pw.x, pw.y)
+        local d = dist(my_big.x, my_big.y, pw.x, pw.y)
         if d < nearest_pw_d then
             nearest_pw_d = d
             nearest_pw = pw
@@ -126,18 +157,18 @@ local function decide(p)
     if nearest_pw ~= nil then
         local d = nearest_pw_d
         if d < 1 then d = 1 end
-        p.ai_dx = (nearest_pw.x - p.x) / d
-        p.ai_dy = (nearest_pw.y - p.y) / d
+        p.ai_dx = (nearest_pw.x - my_big.x) / d
+        p.ai_dy = (nearest_pw.y - my_big.y) / d
         return
     end
 
-    -- 4) 觅食：找最近的金币豆
+    -- 4) 觅食：找离最大细胞最近的金币豆
     local nearest = nil
     local nearest_d = sight_food
     local foods = World.get_foods()
     for i = 1, #foods do
         local f = foods[i]
-        local d = dist(p.x, p.y, f.x, f.y)
+        local d = dist(my_big.x, my_big.y, f.x, f.y)
         if d < nearest_d then
             nearest_d = d
             nearest = f
@@ -147,8 +178,8 @@ local function decide(p)
     if nearest ~= nil then
         local d = nearest_d
         if d < 1 then d = 1 end
-        p.ai_dx = (nearest.x - p.x) / d
-        p.ai_dy = (nearest.y - p.y) / d
+        p.ai_dx = (nearest.x - my_big.x) / d
+        p.ai_dy = (nearest.y - my_big.y) / d
         return
     end
 

@@ -65,6 +65,15 @@ function on_event(type, connid, data, len, reason)
             local dy = msg["dy"] or 0
             World.set_player_move(connid, dx, dy)
 
+        elseif mtype == "split" then
+            World.request_split(connid)
+
+        elseif mtype == "chat" then
+            local content = msg["content"]
+            if content ~= nil and type_of(content) == "string" then
+                World.submit_chat(connid, content)
+            end
+
         elseif mtype == "get_rank" then
             -- 历史排行：直接读服务端缓存（DB.tick_refresh 周期从 MySQL/内存刷新）
             -- 响应挂到玩家记录上，主循环经 p.connid 发送（Linux 上队列 connid 路径会静默失败）
@@ -77,6 +86,12 @@ function on_event(type, connid, data, len, reason)
 
         elseif mtype == "ping" then
             World.enqueue_response(connid, { type = "pong" })
+
+        elseif mtype == "get_chat" then
+            local p = World.get_player_by_conn(connid)
+            if p ~= nil then
+                p.pending_chat = { type = "chat_history", list = World.get_recent_chat() }
+            end
         end
 
     elseif type == "close" then
@@ -127,6 +142,11 @@ function flush_login_responses()
             ws_server_obj:send(p.connid, json_str)
             p.pending_rank = nil
         end
+        if p.pending_chat ~= nil then
+            local json_str = json.encode(p.pending_chat)
+            ws_server_obj:send(p.connid, json_str)
+            p.pending_chat = nil
+        end
     end
 end
 
@@ -136,7 +156,12 @@ function flush_pending()
     if responses == nil then return end
     for i = 1, #responses do
         local item = responses[i]
-        send(item.connid, item.tbl)
+        if item.connid == -1 then
+            -- 世界广播（聊天等）：与 broadcast 同路径，遍历所有在线连接
+            broadcast(item.tbl)
+        else
+            send(item.connid, item.tbl)
+        end
     end
 end
 
@@ -206,19 +231,22 @@ function notify_zone(zi)
     broadcast(m)
 end
 
-function notify_eat(eater_id, victim_id, gold)
+function notify_eat(eater_id, victim_id, gold, full, partial)
     -- 附带双方昵称供前端击杀播报直接展示（回调外的主循环上下文，读玩家表安全）
     local all_players = World.get_all_players()
     local eater = all_players[eater_id]
     local victim = all_players[victim_id]
-    broadcast({
+    local m = {
         type = "eat",
         eater_id = eater_id,
         victim_id = victim_id,
         eater_name = eater ~= nil and eater.name or tostring(eater_id),
         victim_name = victim ~= nil and victim.name or tostring(victim_id),
         gold = gold
-    })
+    }
+    if full then m.full = true end
+    if partial then m.partial = true end
+    broadcast(m)
 end
 
 -- 踢掉超过 timeout_s 秒没有任何消息的空闲连接（主循环周期调用）

@@ -112,7 +112,7 @@ function start(config_path)
         -- 吞噬与复活事件广播
         for i = 1, #eat_events do
             local ev = eat_events[i]
-            NetWs.notify_eat(ev.eater_id, ev.victim_id, ev.gold)
+            NetWs.notify_eat(ev.eater_id, ev.victim_id, ev.gold, ev.full, ev.partial)
         end
 
         for i = 1, #died_events do

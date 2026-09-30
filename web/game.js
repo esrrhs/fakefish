@@ -234,7 +234,7 @@
         }
     }
 
-    // 处理快照
+    // 处理快照（每个细胞一条，以 "id:cell" 为键）
     function handleSnapshot(playerList, foodList, powerupList, zoneInfo) {
         if (foodList && foodList.length > 0) {
             foods = foodList;
@@ -246,15 +246,17 @@
             zone = zoneInfo;
             zoneHud.classList.remove("hidden");
         }
-        const currentIds = new Set();
-        hudOnline.innerText = playerList.length;
+        const currentKeys = new Set();
+        hudOnline.innerText = new Set(playerList.map(p => p.id)).size;
 
         for (const p of playerList) {
-            currentIds.add(p.id);
-            let existing = players.get(p.id);
+            const key = p.id + ":" + (p.cell || 1);
+            currentKeys.add(key);
+            let existing = players.get(key);
             if (!existing) {
                 existing = {
                     id: p.id,
+                    cell: p.cell || 1,
                     name: p.name || `Player_${p.id}`,
                     x: p.x,
                     y: p.y,
@@ -262,33 +264,40 @@
                     r: p.r,
                     bot: !!p.bot,
                     fx: p.fx || null,
-                    color: p.color || getPlayerColor(p.id)
+                    color: getPlayerColor(p.id)
                 };
-                players.set(p.id, existing);
+                players.set(key, existing);
             } else {
                 existing.targetX = p.x;
                 existing.targetY = p.y;
                 existing.gold = p.gold;
                 existing.r = p.r;
                 if (p.name) existing.name = p.name;
-                if (p.color) existing.color = p.color;
                 existing.bot = !!p.bot;
                 existing.fx = p.fx || null;
             }
+        }
 
-            // 更新自己 HUD
-            if (p.id === localPlayerId) {
-                hudGold.innerText = p.gold;
-                hudRadius.innerText = Math.round(p.r);
-                hudPos.innerText = `(${Math.round(p.x)}, ${Math.round(p.y)})`;
+        // 移除消失的细胞
+        for (const key of players.keys()) {
+            if (!currentKeys.has(key)) {
+                players.delete(key);
             }
         }
 
-        // 移除下线玩家
-        for (const id of players.keys()) {
-            if (!currentIds.has(id)) {
-                players.delete(id);
+        // 自己的 HUD：金币按全部细胞求和，体型/坐标取最大细胞
+        let myGold = 0;
+        let myBig = null;
+        for (const c of players.values()) {
+            if (c.id === localPlayerId) {
+                myGold = myGold + c.gold;
+                if (myBig === null || c.r > myBig.r) myBig = c;
             }
+        }
+        hudGold.innerText = myGold;
+        if (myBig !== null) {
+            hudRadius.innerText = Math.round(myBig.r);
+            hudPos.innerText = `(${Math.round(myBig.x)}, ${Math.round(myBig.y)})`;
         }
 
         // 更新排行榜
@@ -308,16 +317,21 @@
         }
         zoneHudDetail.innerText = `第 ${zone.phase} 阶段 · ${action}`;
 
-        const me = players.get(localPlayerId);
-        if (me) {
-            const dx = me.x - zone.x;
-            const dy = me.y - zone.y;
-            const outside = (dx * dx + dy * dy) > (zone.r * zone.r);
-            if (outside) {
-                dangerVignette.classList.add("active");
-            } else {
-                dangerVignette.classList.remove("active");
+        // 任一自身细胞在圈外即显示危险红雾
+        let anyOutside = false;
+        for (const c of players.values()) {
+            if (c.id === localPlayerId) {
+                const dx = c.x - zone.x;
+                const dy = c.y - zone.y;
+                if ((dx * dx + dy * dy) > zone.r * zone.r) {
+                    anyOutside = true;
+                }
             }
+        }
+        if (anyOutside) {
+            dangerVignette.classList.add("active");
+        } else {
+            dangerVignette.classList.remove("active");
         }
     }
 
@@ -344,7 +358,19 @@
     }
 
     function updateLeaderboard(list) {
-        const sorted = [...list].sort((a, b) => (b.gold || 0) - (a.gold || 0)).slice(0, 5);
+        // 快照按细胞下发，先按玩家聚合全部细胞金币
+        const agg = new Map();
+        for (const p of list) {
+            let a = agg.get(p.id);
+            if (!a) {
+                a = { id: p.id, name: p.name, gold: 0, bot: !!p.bot };
+                agg.set(p.id, a);
+            }
+            a.gold = a.gold + (p.gold || 0);
+            if (p.name) a.name = p.name;
+            a.bot = !!p.bot;
+        }
+        const sorted = [...agg.values()].sort((a, b) => b.gold - a.gold).slice(0, 5);
         leaderboardList.innerHTML = "";
         sorted.forEach((item, idx) => {
             const li = document.createElement("li");
@@ -379,16 +405,26 @@
         });
     }
 
+    // 按玩家 id 找到其最大细胞（快照细胞键为 "id:cell"）
+    function findBiggestCellById(id) {
+        let found = null;
+        for (const c of players.values()) {
+            if (c.id === id && (found === null || c.r > found.r)) found = c;
+        }
+        return found;
+    }
+
     function handleEatEvent(msg) {
-        const eater = players.get(msg.eater_id);
-        const victim = players.get(msg.victim_id);
+        const eater = findBiggestCellById(msg.eater_id);
+        const victim = findBiggestCellById(msg.victim_id);
         const goldGain = msg.gold || 0;
 
         if (eater) {
             addFloatingText(`+${goldGain} 金币!`, eater.x, eater.y - eater.r - 10, "#fbbf24", 20);
         }
         if (msg.eater_id === localPlayerId) {
-            showToast(`你吃掉了 ${msg.victim_name || (victim ? victim.name : "小球")}，获得 ${goldGain} 金币！`, "success");
+            const what = msg.partial ? "对方一个细胞" : (msg.victim_name || (victim ? victim.name : "小球"));
+            showToast(`你吃掉了 ${what}，获得 ${goldGain} 金币！`, "success");
         }
     }
 
@@ -467,6 +503,12 @@
     // 键盘与鼠标输入控制
     window.addEventListener("keydown", (e) => {
         if (keys.hasOwnProperty(e.key)) keys[e.key] = true;
+        // 空格：分裂（按住不重复触发；阻止页面滚动）
+        if (e.code === "Space" && !e.repeat && isConnected && localPlayerId
+            && ws && ws.readyState === WebSocket.OPEN) {
+            e.preventDefault();
+            ws.send(JSON.stringify({ type: "split" }));
+        }
     });
 
     window.addEventListener("keyup", (e) => {
@@ -558,11 +600,18 @@
             }
         }
 
-        // 摄像机平滑跟随本地玩家
-        const me = players.get(localPlayerId);
-        if (me) {
-            camera.x += (me.x - camera.x) * 0.2;
-            camera.y += (me.y - camera.y) * 0.2;
+        // 摄像机平滑跟随本地玩家全部细胞的质心
+        let sx = 0, sy = 0, sn = 0;
+        for (const c of players.values()) {
+            if (c.id === localPlayerId) {
+                sx += c.x;
+                sy += c.y;
+                sn += 1;
+            }
+        }
+        if (sn > 0) {
+            camera.x += (sx / sn - camera.x) * 0.2;
+            camera.y += (sy / sn - camera.y) * 0.2;
         }
 
         // 清屏
