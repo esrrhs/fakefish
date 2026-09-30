@@ -46,9 +46,24 @@ function start(config_path)
     local tick_ms = srv_cfg["tick_ms"] or 50
     local dt = tick_ms / 1000.0
     local conn_timeout_s = game_cfg["conn_timeout_s"] or 15
+    local feast_interval_s = game_cfg["feast_interval_s"] or 0
 
     print("[Main] Server loop started: " .. tostring(1000 / tick_ms) .. "Hz (tick=" .. tostring(tick_ms) .. "ms)")
     print("[Main] Access game at: http://127.0.0.1:" .. tostring(srv_cfg["http_port"] or 8080))
+    if feast_interval_s > 0 then
+        print("[Main] Feast (gold rain) every " .. tostring(feast_interval_s) .. "s")
+    end
+
+    -- timer 心跳（fakelua 全局唯一心跳）：每秒调度排行刷新与金币雨
+    -- 注意：timer.set_heartbeat 传函数名字符串，回调由 runtime.tick 泵出
+    local hb_ok, hb_err = pcall(function()
+        timer.set_heartbeat(1000, "Main.on_heartbeat")
+    end)
+    if hb_ok then
+        print("[Main] Timer heartbeat registered (1s)")
+    else
+        print("[Main] Warning: timer heartbeat failed: " .. tostring(hb_err))
+    end
 
     -- 6. 主事件循环驱动
     local frame = 0
@@ -57,6 +72,23 @@ function start(config_path)
 
         -- 统一事件泵推进：驱动 socket IO、定时器、MySQL 等
         runtime.tick()
+
+        -- 金币雨到期（timer 心跳置位）：主循环里撒豆并广播——
+        -- 奖励豆 table 必须在主循环上下文创建才能跨帧存活，广播也不能进回调
+        if World.pop_feast_due() then
+            local feast = World.spawn_feast()
+            if feast ~= nil then
+                NetWs.notify_feast(feast.x, feast.y, feast.count)
+            end
+        end
+
+        -- 安全区变化（收缩/重置）：读当前 zone 信息并广播
+        if World.pop_zone_due() then
+            local zi = World.get_zone_info()
+            if zi ~= nil then
+                NetWs.notify_zone(zi)
+            end
+        end
 
         -- 每秒一次：踢掉心跳超时的空闲连接
         if frame % 20 == 0 then
@@ -69,8 +101,7 @@ function start(config_path)
         -- flush 其他暂存消息（register_fail, pong 等）
         NetWs.flush_pending()
 
-        -- 排行缓存周期刷新（SELECT 结果经命名回调写回 DB 缓存）
-        DB.tick_refresh()
+        -- 排行缓存刷新已改由 timer 心跳调度（Main.on_heartbeat 每 5s 一次）
 
         -- 机器人 AI 决策（写移动意图，物理结算仍在 World.update）
         Bot.update(dt)
@@ -107,4 +138,9 @@ end
 
 function run()
     return start("config.yaml")
+end
+
+-- timer 心跳回调（fakelua 按函数名派发；C++ 上下文，只做世界状态变更）
+function on_heartbeat(type, timer_id)
+    World.on_heartbeat()
 end

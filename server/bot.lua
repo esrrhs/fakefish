@@ -45,6 +45,18 @@ end
 local function decide(p)
     p.ai_timer = decision_min + math.random() * (decision_max - decision_min)
 
+    -- 0) 安全区优先：球心在圈外、或距圈边不足自身半径+余量 → 朝圈心移动
+    local zone = World.get_zone_info()
+    if zone ~= nil then
+        local zd = dist(p.x, p.y, zone.x, zone.y)
+        if zd > zone.r - (p.r + 40) then
+            if zd < 1 then zd = 1 end
+            p.ai_dx = (zone.x - p.x) / zd
+            p.ai_dy = (zone.y - p.y) / zd
+            return
+        end
+    end
+
     -- 已吃撑的机器人不再主动觅食/猎杀，只游荡，避免一家独大
     if p.gold >= bot_max_gold then
         local a = math.random() * 6.28318

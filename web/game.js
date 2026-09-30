@@ -12,6 +12,7 @@
     let camera = { x: 1000, y: 1000 };
     let isConnected = false;
     let authMode = "login"; // 'login' or 'register'
+    let zone = null; // { x, y, r, phase, holding, next_in }
 
     // DOM 元素
     const canvas = document.getElementById("game-canvas");
@@ -35,6 +36,9 @@
     const leaderboardList = document.getElementById("leaderboard-list");
     const rankList = document.getElementById("rank-list");
     const notificationBox = document.getElementById("notification-box");
+    const zoneHud = document.getElementById("zone-hud");
+    const zoneHudDetail = document.getElementById("zone-hud-detail");
+    const dangerVignette = document.getElementById("danger-vignette");
 
     // 控制输入状态
     const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false };
@@ -143,6 +147,9 @@
             authModal.classList.remove("hidden");
             hud.classList.add("hidden");
             leaderboard.classList.add("hidden");
+            zoneHud.classList.add("hidden");
+            dangerVignette.classList.remove("active");
+            zone = null;
         };
 
         ws.onerror = (err) => {
@@ -194,7 +201,11 @@
                 break;
 
             case "snapshot":
-                handleSnapshot(msg.players || [], msg.foods || [], msg.powerups || []);
+                handleSnapshot(msg.players || [], msg.foods || [], msg.powerups || [], msg.zone);
+                break;
+
+            case "zone":
+                handleZoneEvent(msg);
                 break;
 
             case "eat":
@@ -214,18 +225,26 @@
                 handlePowerupEvent(msg);
                 break;
 
+            case "feast":
+                handleFeastEvent(msg);
+                break;
+
             case "pong":
                 break;
         }
     }
 
     // 处理快照
-    function handleSnapshot(playerList, foodList, powerupList) {
+    function handleSnapshot(playerList, foodList, powerupList, zoneInfo) {
         if (foodList && foodList.length > 0) {
             foods = foodList;
         }
         if (powerupList) {
             powerups = powerupList;
+        }
+        if (zoneInfo) {
+            zone = zoneInfo;
+            zoneHud.classList.remove("hidden");
         }
         const currentIds = new Set();
         hudOnline.innerText = playerList.length;
@@ -274,6 +293,54 @@
 
         // 更新排行榜
         updateLeaderboard(playerList);
+
+        updateZoneHud();
+    }
+
+    // 安全区 HUD 文本 + 圈外红雾
+    function updateZoneHud() {
+        if (!zone) return;
+        let action;
+        if (zone.holding) {
+            action = "最终收缩保持中";
+        } else {
+            action = `下次收缩 ${zone.next_in}s`;
+        }
+        zoneHudDetail.innerText = `第 ${zone.phase} 阶段 · ${action}`;
+
+        const me = players.get(localPlayerId);
+        if (me) {
+            const dx = me.x - zone.x;
+            const dy = me.y - zone.y;
+            const outside = (dx * dx + dy * dy) > (zone.r * zone.r);
+            if (outside) {
+                dangerVignette.classList.add("active");
+            } else {
+                dangerVignette.classList.remove("active");
+            }
+        }
+    }
+
+    // 安全区收缩/重置事件：公告横幅 + 场景飘字
+    function handleZoneEvent(msg) {
+        zone = msg;
+        zoneHud.classList.remove("hidden");
+        updateZoneHud();
+
+        const banner = document.getElementById("world-event");
+        banner.classList.remove("fade-out");
+        if (msg.reset) {
+            banner.innerHTML = `🌀 安全区已重置！新的一轮开始了`;
+        } else if (msg.holding) {
+            banner.innerHTML = `⚠️ 安全区收缩到极限！最终对决开始`;
+        } else {
+            banner.innerHTML = `⚠️ 安全区收缩！第 ${msg.phase} 阶段，快向中心靠拢`;
+        }
+        banner.classList.remove("hidden");
+        clearTimeout(handleZoneEvent._t1);
+        clearTimeout(handleZoneEvent._t2);
+        handleZoneEvent._t1 = setTimeout(() => banner.classList.add("fade-out"), 5000);
+        handleZoneEvent._t2 = setTimeout(() => banner.classList.add("hidden"), 6200);
     }
 
     function updateLeaderboard(list) {
@@ -367,6 +434,21 @@
             addFloatingText(`${meta.icon} ${meta.label}`, owner.x, owner.y - owner.r - 28, meta.color, 16);
         } else if (msg.player_id !== localPlayerId) {
             console.log(`[powerup] ${who} picked ${msg.kind}`);
+        }
+    }
+
+    // 金币雨公告：横幅 + 场景飘字
+    function handleFeastEvent(msg) {
+        const banner = document.getElementById("world-event");
+        banner.innerHTML = `💰 金币雨！地图 (${Math.round(msg.x)}, ${Math.round(msg.y)}) 附近散落 ${msg.count || 0} 枚金币豆`;
+        banner.classList.remove("hidden");
+        banner.classList.remove("fade-out");
+        clearTimeout(handleFeastEvent._t1);
+        clearTimeout(handleFeastEvent._t2);
+        handleFeastEvent._t1 = setTimeout(() => banner.classList.add("fade-out"), 6000);
+        handleFeastEvent._t2 = setTimeout(() => banner.classList.add("hidden"), 7200);
+        if (msg.x !== undefined) {
+            addFloatingText(`💰 金币雨！`, msg.x, msg.y - 40, "#fbbf24", 22);
         }
     }
 
@@ -496,6 +578,9 @@
         // 2. 绘制地图边界
         drawBorders();
 
+        // 2.5 绘制安全区与圈外危险区域
+        drawZone();
+
         // 3. 绘制地面积分金币
         drawFoods();
 
@@ -510,6 +595,30 @@
 
         // 5. 绘制漂浮文字特效
         drawFloatingTexts();
+
+        ctx.restore();
+    }
+
+    function drawZone() {
+        if (!zone) return;
+        ctx.save();
+
+        // 圈外危险区域：巨矩形 + 安全圆，evenodd 填充只覆盖圆外部分
+        ctx.beginPath();
+        ctx.rect(-5000, -5000, 25000, 25000);
+        ctx.arc(zone.x, zone.y, zone.r, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(239, 68, 68, 0.13)";
+        ctx.fill("evenodd");
+
+        // 安全区边界：收缩阶段青色、最终保持阶段红色脉动
+        const pulse = zone.holding ? (0.55 + 0.45 * Math.sin(Date.now() / 250)) : 1;
+        ctx.beginPath();
+        ctx.arc(zone.x, zone.y, zone.r, 0, Math.PI * 2);
+        ctx.strokeStyle = zone.holding ? `rgba(239,68,68,${pulse})` : "rgba(96,165,250,0.9)";
+        ctx.lineWidth = 4;
+        ctx.shadowColor = zone.holding ? "#ef4444" : "#60a5fa";
+        ctx.shadowBlur = 16;
+        ctx.stroke();
 
         ctx.restore();
     }

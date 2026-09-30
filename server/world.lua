@@ -32,6 +32,23 @@ local fx_speed_s = 6
 local fx_shield_s = 5
 local fx_magnet_s = 8
 
+-- 金币雨（feast）事件
+local bonus_food = nil
+local feast_bonus = 30
+local feast_interval_s = 0
+-- 心跳世界事件状态（timer 回调只写这里的字段，send 全部留在主循环）
+local world_events = nil
+
+-- 动态安全区（收缩毒圈）
+local zone = nil
+local zone_enable = true
+local zone_initial_r = 1500
+local zone_min_r = 250
+local zone_shrink_ratio = 0.7
+local zone_shrink_interval_s = 60
+local zone_hold_s = 30
+local zone_dps = 20
+
 -- 待发送响应队列（由 NetWs.on_event 回调中入队，主循环 drain）
 -- 放在 World 模块的 upvalue 中，绕过 NetWs 回调上下文的 const 限制
 -- 注意：必须在 init() 中初始化，不能在模块级别直接赋值为 {}，
@@ -91,6 +108,27 @@ function init(cfg)
     fx_speed_s = cfg["fx_speed_s"] or 6
     fx_shield_s = cfg["fx_shield_s"] or 5
     fx_magnet_s = cfg["fx_magnet_s"] or 8
+    feast_interval_s = cfg["feast_interval_s"] or 0
+    bonus_food = {}
+    world_events = { sec = 0, feast = nil }
+
+    zone_enable = cfg["zone_enable"]
+    if zone_enable == nil then zone_enable = true end
+    zone_initial_r = cfg["zone_initial_radius"] or 1500
+    zone_min_r = cfg["zone_min_radius"] or 250
+    zone_shrink_ratio = cfg["zone_shrink_ratio"] or 0.7
+    zone_shrink_interval_s = cfg["zone_shrink_interval_s"] or 60
+    zone_hold_s = cfg["zone_hold_s"] or 30
+    zone_dps = cfg["zone_dps"] or 20
+    -- 初始安全区居中、覆盖整张地图（phase 0；next_in 为距下次收缩秒数）
+    zone = {
+        x = map_width / 2,
+        y = map_height / 2,
+        r = zone_initial_r,
+        phase = 0,
+        holding = false,
+        next_in = zone_shrink_interval_s
+    }
 
     spawn_foods()
     spawn_powerups()
@@ -136,7 +174,8 @@ function add_player(connid, account)
         last_seen = os.time(),
         fx_speed_until = 0,
         fx_shield_until = 0,
-        fx_magnet_until = 0
+        fx_magnet_until = 0,
+        zone_dmg_acc = 0
     }
 
     players[pid] = p
@@ -169,7 +208,8 @@ function add_bot(name)
         ai_dy = 0,
         fx_speed_until = 0,
         fx_shield_until = 0,
-        fx_magnet_until = 0
+        fx_magnet_until = 0,
+        zone_dmg_acc = 0
     }
 
     players[pid] = p
@@ -248,7 +288,7 @@ end
 function update(dt)
     world_time = world_time + dt
 
-    -- 1. 拾取地面积分金币（磁铁生效时拾取半径 x4）
+    -- 1. 拾取地面积分金币（磁铁生效时拾取半径 x4；奖励豆吃掉即移除）
     for pid, p in pairs(players) do
         local pickup_r = p.r
         if world_time < p.fx_magnet_until then
@@ -263,6 +303,25 @@ function update(dt)
                 p.r = Combat.calc_radius(p.gold, radius_base, radius_k)
                 f.x = math.random(50, map_width - 50)
                 f.y = math.random(50, map_height - 50)
+            end
+        end
+        -- 奖励豆：吃掉即移除（n 为显式维护的长度，吃豆后手动 -1）。
+        -- 不能直接写 `while bi <= #bonus_food`：fakelua CGen 会把原生 while 条件里的
+        -- #t 取到函数级临时变量只算一次，循环内 table.remove 缩短表后条件仍用旧长度，
+        -- 导致读到越界 nil（详见 docs/fakelua-pitfalls.md P1-9）。
+        local n = #bonus_food
+        local bi = 1
+        while bi <= n do
+            local f = bonus_food[bi]
+            local fdx = p.x - f.x
+            local fdy = p.y - f.y
+            if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
+                p.gold = p.gold + food_val
+                p.r = Combat.calc_radius(p.gold, radius_base, radius_k)
+                table.remove(bonus_food, bi)
+                n = n - 1
+            else
+                bi = bi + 1
             end
         end
     end
@@ -311,6 +370,26 @@ function update(dt)
             if p.x > map_width - p.r then p.x = map_width - p.r end
             if p.y < p.r then p.y = p.r end
             if p.y > map_height - p.r then p.y = map_height - p.r end
+        end
+    end
+
+    -- 2.5 安全区伤害：球心在安全圈外持续流失金币（小数累积，保证低 dps 也生效）
+    if zone_enable and zone ~= nil then
+        for pid, p in pairs(players) do
+            local zdx = p.x - zone.x
+            local zdy = p.y - zone.y
+            if (zdx * zdx + zdy * zdy) > (zone.r * zone.r) then
+                p.zone_dmg_acc = p.zone_dmg_acc + zone_dps * dt
+                if p.zone_dmg_acc >= 1.0 then
+                    local lose = math.floor(p.zone_dmg_acc)
+                    p.zone_dmg_acc = p.zone_dmg_acc - lose
+                    p.gold = p.gold - lose
+                    if p.gold < 0 then p.gold = 0 end
+                    p.r = Combat.calc_radius(p.gold, radius_base, radius_k)
+                end
+            else
+                p.zone_dmg_acc = 0
+            end
         end
     end
 
@@ -413,11 +492,113 @@ function get_snapshot()
         end
         table.insert(snap_list, entry)
     end
-    return snap_list, food_coins, powerups
+
+    -- 合并普通金币豆与金币雨奖励豆（奖励豆吃掉即消失）
+    local merged_foods = {}
+    for i = 1, #food_coins do
+        table.insert(merged_foods, food_coins[i])
+    end
+    for i = 1, #bonus_food do
+        table.insert(merged_foods, bonus_food[i])
+    end
+    return snap_list, merged_foods, powerups
 end
 
 function get_powerups()
     return powerups
+end
+
+-- ---- 金币雨（由 timer 心跳驱动） ----
+
+-- 撒落一簇奖励金币豆（必须在主循环调用：回调上下文创建的 table 不能跨帧存活）；
+-- 返回事件信息供主循环广播
+function spawn_feast()
+    local cx = math.random(300, map_width - 300)
+    local cy = math.random(300, map_height - 300)
+    for i = 1, feast_bonus do
+        local bx = cx + math.random(-250, 250)
+        local by = cy + math.random(-250, 250)
+        if bx < 20 then bx = 20 end
+        if bx > map_width - 20 then bx = map_width - 20 end
+        if by < 20 then by = 20 end
+        if by > map_height - 20 then by = map_height - 20 end
+        table.insert(bonus_food, { x = bx, y = by })
+    end
+    print("[World] Feast! " .. tostring(feast_bonus) .. " bonus pellets around (" .. tostring(cx) .. ", " .. tostring(cy) .. ")")
+    return { x = cx, y = cy, count = feast_bonus }
+end
+
+-- 主循环读取并清除金币雨到期标记
+function pop_feast_due()
+    if world_events == nil or world_events.feast_due ~= true then return false end
+    world_events.feast_due = false
+    return true
+end
+
+-- ---- 安全区收缩（由 timer 心跳驱动） ----
+
+-- 主循环读取并清除安全区变化标记
+function pop_zone_due()
+    if world_events == nil or world_events.zone_due ~= true then return false end
+    world_events.zone_due = false
+    return true
+end
+
+-- 快照/广播用的安全区信息（构造新表，供 C++ 回调与主循环安全读取）
+function get_zone_info()
+    if zone == nil or not zone_enable then return nil end
+    return {
+        x = zone.x,
+        y = zone.y,
+        r = math.floor(zone.r * 10) / 10,
+        phase = zone.phase,
+        holding = zone.holding,
+        next_in = zone.next_in
+    }
+end
+
+-- timer 心跳（每秒）：排行缓存刷新 + 金币雨 + 安全区调度
+-- 回调上下文只做运行时表的字段写（已验证类别），不创建跨帧 table、不做 ws 发送
+function on_heartbeat()
+    if world_events == nil then return end
+    world_events.sec = world_events.sec + 1
+
+    if world_events.sec % 5 == 0 then
+        DB.tick_refresh()
+    end
+
+    if feast_interval_s > 0 and world_events.sec % feast_interval_s == 0 then
+        world_events.feast_due = true
+    end
+
+    -- 安全区倒计时（只写字段，事件广播由主循环完成）
+    if zone_enable and zone ~= nil then
+        zone.next_in = zone.next_in - 1
+        if zone.next_in <= 0 then
+            if zone.holding then
+                -- 最小圈保持结束 → 重置为覆盖全图的初始圈，开始新一轮
+                zone.x = map_width / 2
+                zone.y = map_height / 2
+                zone.r = zone_initial_r
+                zone.phase = 0
+                zone.holding = false
+                zone.next_in = zone_shrink_interval_s
+            else
+                -- 收缩一阶：半径按比例缩小（圆心固定在地图中央）
+                local nr = math.floor(zone.r * zone_shrink_ratio)
+                if nr <= zone_min_r then
+                    nr = zone_min_r
+                    zone.holding = true
+                    zone.next_in = zone_hold_s
+                else
+                    zone.next_in = zone_shrink_interval_s
+                end
+                zone.r = nr
+                zone.phase = zone.phase + 1
+            end
+            world_events.zone_due = true
+        end
+    end
 end
 
 -- 收到该连接任何消息时刷新活跃时间（心跳超时踢人依据）
