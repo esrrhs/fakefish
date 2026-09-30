@@ -28,3 +28,13 @@ game:
   fx_speed_s: 6            # 加速效果持续秒数（x1.5 移速）
   fx_shield_s: 5           # 护盾效果持续秒数（免疫吞噬）
   fx_magnet_s: 8           # 磁铁效果持续秒数（金币豆拾取半径 x4）
+  feast_interval_s: 120    # 金币雨间隔秒数（timer 心跳驱动），0 关闭；CI 中会被 sed 调快
+
+  # 动态安全区（收缩毒圈）
+  zone_enable: true        # 是否启用安全区收缩
+  zone_initial_radius: 1500  # 初始安全圈半径（覆盖整张地图）
+  zone_min_radius: 250     # 最小圈半径，达到后保持再重置
+  zone_shrink_ratio: 0.7   # 每阶段半径乘以此系数
+  zone_shrink_interval_s: 60  # 收缩间隔秒数；CI 中会被 sed 调快
+  zone_hold_s: 30          # 最小圈保持秒数，之后重置为初始圈；CI 中会被 sed 调快
+  zone_dps: 20             # 圈外每秒流失金币

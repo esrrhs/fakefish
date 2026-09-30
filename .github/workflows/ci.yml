@@ -93,6 +93,11 @@ jobs:
           sed -i 's/password: ""/password: "changeme"/' config.yaml
           # Disable bots for the deterministic client/combat phase (re-enabled before test_bots.js)
           sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml && rm -f config.yaml.bak
+          # Speed up the feast gold-rain cycle so test_feast.js sees one quickly
+          sed -i.bak 's/feast_interval_s: 120/feast_interval_s: 12/' config.yaml && rm -f config.yaml.bak
+          # Speed up the safe-zone shrink/hold cycle so test_zone.js sees a full cycle
+          sed -i.bak 's/zone_shrink_interval_s: 60/zone_shrink_interval_s: 12/' config.yaml && rm -f config.yaml.bak
+          sed -i.bak 's/zone_hold_s: 30/zone_hold_s: 6/' config.yaml && rm -f config.yaml.bak
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -133,6 +138,14 @@ jobs:
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="
           node test_powerup.js
+
+          # Run feast gold-rain event test (feast interval sed-ed to 12s)
+          echo "=== Running Feast E2E Test ==="
+          node test_feast.js
+
+          # Run shrinking safe-zone test (shrink/hold cycle sed-ed to 12s/6s)
+          echo "=== Running Zone E2E Test ==="
+          node test_zone.js
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
@@ -232,6 +245,11 @@ jobs:
           cp config.example.yaml config.yaml
           # Disable bots for the deterministic client/combat phase (re-enabled before test_bots.js)
           sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml && rm -f config.yaml.bak
+          # Speed up the feast gold-rain cycle so test_feast.js sees one quickly
+          sed -i.bak 's/feast_interval_s: 120/feast_interval_s: 12/' config.yaml && rm -f config.yaml.bak
+          # Speed up the safe-zone shrink/hold cycle so test_zone.js sees a full cycle
+          sed -i.bak 's/zone_shrink_interval_s: 60/zone_shrink_interval_s: 12/' config.yaml && rm -f config.yaml.bak
+          sed -i.bak 's/zone_hold_s: 30/zone_hold_s: 6/' config.yaml && rm -f config.yaml.bak
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -272,6 +290,14 @@ jobs:
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="
           node test_powerup.js
+
+          # Run feast gold-rain event test (feast interval sed-ed to 12s)
+          echo "=== Running Feast E2E Test ==="
+          node test_feast.js
+
+          # Run shrinking safe-zone test (shrink/hold cycle sed-ed to 12s/6s)
+          echo "=== Running Zone E2E Test ==="
+          node test_zone.js
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true

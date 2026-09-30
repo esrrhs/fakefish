@@ -11,8 +11,6 @@ local db_state = nil
 -- 回调运行在 C++ 派发上下文：只能写运行时创建的 table 的字段，不能改模块级 upvalue。
 local top_cache = nil
 
-local refresh_interval_ticks = 100 -- 5s @ 50ms tick
-
 function ensure_inited()
     if in_memory_accounts == nil then
         in_memory_accounts = {}
@@ -25,8 +23,8 @@ end
 -- 初始化数据库
 function init(cfg)
     ensure_inited()
-    -- 1s 后首刷（20 ticks），之后每 5s 一次，尽快让排行缓存可用
-    top_cache = { list = {}, countdown = 20 }
+    -- 刷新节奏由 timer 心跳驱动（Main.on_heartbeat 每 5s 调 tick_refresh）
+    top_cache = { list = {} }
 
     if cfg == nil then
         cfg = {}
@@ -208,12 +206,9 @@ local function sort_top(limit)
     return top
 end
 
--- 主循环周期调用：刷新排行缓存（SELECT 结果由 DB.on_top_result 写回）
+-- 刷新排行缓存（由 timer 心跳每 5s 调用；SELECT 结果由 DB.on_top_result 写回）
 function tick_refresh()
     if top_cache == nil then return end
-    top_cache.countdown = top_cache.countdown - 1
-    if top_cache.countdown > 0 then return end
-    top_cache.countdown = refresh_interval_ticks
 
     if pool ~= nil then
         local conn = pool:acquire()

@@ -164,7 +164,8 @@ function broadcast_snapshot()
         type = "snapshot",
         players = snap,
         foods = foods,
-        powerups = powerups
+        powerups = powerups,
+        zone = World.get_zone_info()
     }
     broadcast(msg)
 end
@@ -176,6 +177,33 @@ function notify_powerup(player_id, name, kind)
         name = name,
         kind = kind
     })
+end
+
+function notify_feast(x, y, count)
+    broadcast({
+        type = "feast",
+        x = x,
+        y = y,
+        count = count
+    })
+end
+
+-- 安全区收缩/重置事件（zi 为 World.get_zone_info 返回表）
+function notify_zone(zi)
+    if zi == nil then return end
+    local m = {
+        type = "zone",
+        x = zi.x,
+        y = zi.y,
+        r = zi.r,
+        phase = zi.phase,
+        holding = zi.holding,
+        next_in = zi.next_in
+    }
+    if zi.phase == 0 then
+        m.reset = true
+    end
+    broadcast(m)
 end
 
 function notify_eat(eater_id, victim_id, gold)

@@ -99,8 +99,10 @@
 |------|------|------|
 | `login_ok` | `player_id`, `gold`, `map` | 登录成功 |
 | `login_fail` / `register_fail` | `reason` | 失败原因 |
-| `snapshot` | `players[]`, `foods[]`, `powerups[]` | 全量或差分场景状态 |
+| `snapshot` | `players[]`, `foods[]`, `powerups[]`, `zone` | 全量场景状态（zone 为当前安全区信息） |
 | `powerup` | `player_id`, `name`, `kind` | 道具拾取事件（kind: speed/shield/magnet） |
+| `feast` | `x`, `y`, `count` | 金币雨事件：地图 (x,y) 附近散落 count 枚奖励金币豆（吃掉即消失） |
+| `zone` | `x`, `y`, `r`, `phase`, `holding`, `next_in`, `reset?` | 安全区变化：收缩到新半径或重置（reset=true） |
 | `player_join` / `player_leave` | `player_id`, … | 进出场 |
 | `eat` | `eater_id`, `victim_id`, `eater_name`, `victim_name`, `gold` | 吃球事件（可驱动特效与击杀播报） |
 | `you_died` | `gold`, `x`, `y` | 自己被吃后复活信息 |
@@ -226,6 +228,8 @@ fakefish/
   test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证测试
   test_bots.js            # AI 机器人与历史排行验证测试
   test_powerup.js         # 道具拾取与特效验证测试
+  test_feast.js           # 金币雨世界事件验证测试
+  test_zone.js            # 动态安全区收缩与圈外伤害验证测试
   CMakeLists.txt          # 工程构建配置（Modern CMake find_package）
 ```
 
@@ -284,6 +288,24 @@ fakefish/
 - [x] Bot AI 顺路捡道具（威胁 > 猎物 > 道具 > 觅食优先级）
 - [x] 端到端测试脚本（`test_powerup.js`）并纳入 CI
 
+### Phase 8 — 定时器与世界事件
+
+- [x] 接入 fakelua `timer.set_heartbeat`（1s 全局心跳，按函数名派发回调）：每 5s 刷新排行缓存、每 `game.feast_interval_s` 触发金币雨，替代帧计数调度
+- [x] 金币雨（Gold Rain）：随机区域散落 30 枚奖励金币豆（`feast_bonus`），吃掉即消失不重生；广播 `feast` 事件，前端横幅公告 + 场景飘字
+- [x] 回调约束贯彻：timer 回调只写运行时表字段/内容，所有 ws 发送留在主循环（规避 Linux 回调内 send 静默失败）
+- [x] 心跳超时踢人保留帧驱动（`close_connection` 会同步派发 close 事件，避免嵌套派发风险）
+- [x] 端到端测试脚本（`test_feast.js`）并纳入 CI（CI 中 feast 间隔被 sed 调快至 12s）
+
+### Phase 9 — 动态安全区（收缩毒圈）
+
+- [x] 安全区为地图中央的圆，初始覆盖全图（`zone_initial_radius`），按 `zone_shrink_interval_s` 周期性收缩（半径乘 `zone_shrink_ratio`），可经 `zone_enable: false` 关闭
+- [x] 收缩到 `zone_min_radius` 后进入保持期（`zone_hold_s`，边界红色脉动），随后重置为初始圈开始新一轮
+- [x] 球心在圈外持续流失金币（`zone_dps`，小数累积），金币与半径实时重算，不会致死
+- [x] 快照携带 `zone` 字段，收缩/重置广播 `zone` 事件；前端渲染安全圈边界、圈外红色区域与圈外屏幕红雾
+- [x] Bot AI 最高优先级规避：圈外或贴近圈边即朝圈心移动
+- [x] 端到端测试脚本（`test_zone.js`）并纳入 CI（CI 中收缩/保持节奏被 sed 调快至 12s/6s）
+- [x] 修复 fakelua codegen bug：原生 while 条件里的 `#t` 被求值一次复用导致越界（详见 docs/fakelua-pitfalls.md P1-9）
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -293,6 +315,8 @@ fakefish/
 5. **M5**：机器人进场游走、历史排行跨会话持久化（MySQL）与内存降级排行：**已通过**
 6. **M6**：HTTP JSON API 可查询排行/统计、空闲连接被超时踢出、击杀播报实时展示：**已通过**
 7. **M7**：三种道具拾取生效与过期、护盾阻断吞噬、快照/事件同步、Bot 主动拾取：**已通过**
+8. **M8**：timer 心跳驱动排行刷新与金币雨、奖励豆可拾取且不重生、事件横幅同步：**已通过**
+9. **M9**：安全区周期性收缩与重置、圈外持续掉金币、快照/事件同步、Bot 主动向圈心规避：**已通过**
 
 ---
 
