@@ -147,6 +147,10 @@ jobs:
           echo "=== Running Zone E2E Test ==="
           node test_zone.js
 
+          # Run split/merge test (bot-free world, default merge cooldown)
+          echo "=== Running Split E2E Test ==="
+          node test_split.js
+
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
           sleep 1
@@ -298,6 +302,10 @@ jobs:
           # Run shrinking safe-zone test (shrink/hold cycle sed-ed to 12s/6s)
           echo "=== Running Zone E2E Test ==="
           node test_zone.js
+
+          # Run split/merge test (bot-free world, default merge cooldown)
+          echo "=== Running Split E2E Test ==="
+          node test_split.js
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true

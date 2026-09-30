@@ -38,3 +38,10 @@ game:
   zone_shrink_interval_s: 60  # 收缩间隔秒数；CI 中会被 sed 调快
   zone_hold_s: 30          # 最小圈保持秒数，之后重置为初始圈；CI 中会被 sed 调快
   zone_dps: 20             # 圈外每秒流失金币
+
+  # 分裂球（空格分裂；细胞冷却后自动合体）
+  split_max_cells: 8       # 每名玩家最多细胞数
+  split_min_gold: 100      # 细胞金币严格大于此值才能分裂
+  split_impulse: 480       # 分裂新细胞初速度（单位/秒）
+  split_friction: 3.2      # 分裂冲量衰减系数（越大停得越快）
+  merge_cooldown_s: 12     # 分裂后细胞合体冷却秒数

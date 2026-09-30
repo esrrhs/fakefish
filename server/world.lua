@@ -39,7 +39,11 @@ local feast_interval_s = 0
 -- 心跳世界事件状态（timer 回调只写这里的字段，send 全部留在主循环）
 local world_events = nil
 
+-- 聊天：recent 为最近消息表（在 init 创建）；每条 { name, content, t }
+local chat_recent = nil
+
 -- 动态安全区（收缩毒圈）
+local bot_max_gold = 2000  -- 机器人金币软上限（达上限后不再被动拾取）
 local zone = nil
 local zone_enable = true
 local zone_initial_r = 1500
@@ -48,6 +52,17 @@ local zone_shrink_ratio = 0.7
 local zone_shrink_interval_s = 60
 local zone_hold_s = 30
 local zone_dps = 20
+
+-- 分裂球（多细胞）
+local chat_enable = true
+local chat_max_len = 80       -- 单条消息最大字节数
+local chat_history = 20       -- 保留最近消息条数
+local chat_cooldown_s = 2     -- 同一玩家发消息最小间隔
+local split_max_cells = 8       -- 每名玩家最多细胞数
+local split_min_gold = 100      -- 细胞金币严格大于此值才可分裂
+local split_impulse = 480       -- 分裂新细胞初速度（单位/秒）
+local split_friction = 3.2      -- 冲量衰减系数（越大停得越快）
+local merge_cooldown_s = 12     -- 分裂后需经过的秒数，细胞间才允许合体
 
 -- 待发送响应队列（由 NetWs.on_event 回调中入队，主循环 drain）
 -- 放在 World 模块的 upvalue 中，绕过 NetWs 回调上下文的 const 限制
@@ -112,14 +127,29 @@ function init(cfg)
     bonus_food = {}
     world_events = { sec = 0, feast = nil }
 
+    chat_enable = cfg["chat_enable"]
+    if chat_enable == nil then chat_enable = true end
+    chat_max_len = cfg["chat_max_len"] or 80
+    chat_history = cfg["chat_history"] or 20
+    chat_cooldown_s = cfg["chat_cooldown_s"] or 2
+    chat_recent = {}
+
     zone_enable = cfg["zone_enable"]
     if zone_enable == nil then zone_enable = true end
+    bot_max_gold = cfg["bot_max_gold"] or 2000
     zone_initial_r = cfg["zone_initial_radius"] or 1500
     zone_min_r = cfg["zone_min_radius"] or 250
     zone_shrink_ratio = cfg["zone_shrink_ratio"] or 0.7
     zone_shrink_interval_s = cfg["zone_shrink_interval_s"] or 60
     zone_hold_s = cfg["zone_hold_s"] or 30
     zone_dps = cfg["zone_dps"] or 20
+
+    split_max_cells = cfg["split_max_cells"] or 8
+    split_min_gold = cfg["split_min_gold"] or 100
+    split_impulse = cfg["split_impulse"] or 480
+    split_friction = cfg["split_friction"] or 3.2
+    merge_cooldown_s = cfg["merge_cooldown_s"] or 12
+
     -- 初始安全区居中、覆盖整张地图（phase 0；next_in 为距下次收缩秒数）
     zone = {
         x = map_width / 2,
@@ -154,28 +184,50 @@ function get_random_spawn()
     return rx, ry
 end
 
+-- 构造一个细胞（必须在主循环上下文调用）
+-- gold 为整数；vx/vy 为分裂冲量速度；born 为细胞产生的世界时间（合体冷却依据）
+local function make_cell(x, y, gold, vx, vy, born)
+    return {
+        x = x,
+        y = y,
+        gold = gold,
+        r = Combat.calc_radius(gold, radius_base, radius_k),
+        vx = vx or 0,
+        vy = vy or 0,
+        born = born or world_time,
+        zone_acc = 0,
+        alive = true
+    }
+end
+
+-- 玩家全部细胞的金币总和
+local function total_gold(p)
+    local sum = 0
+    for i = 1, #p.parts do
+        sum = sum + p.parts[i].gold
+    end
+    return sum
+end
+
 -- 玩家进场
 function add_player(connid, account)
     local pid = account.id
     local spawn_x, spawn_y = get_random_spawn()
     local gold = account.gold or initial_gold
-    local r = Combat.calc_radius(gold, radius_base, radius_k)
 
     local p = {
         id = pid,
         connid = connid,
         name = account.username,
-        x = spawn_x,
-        y = spawn_y,
         dx = 0,
         dy = 0,
-        gold = gold,
-        r = r,
         last_seen = os.time(),
         fx_speed_until = 0,
         fx_shield_until = 0,
         fx_magnet_until = 0,
-        zone_dmg_acc = 0
+        pending_split = false,
+        last_split = -merge_cooldown_s,
+        parts = { make_cell(spawn_x, spawn_y, gold, 0, 0, 0) }
     }
 
     players[pid] = p
@@ -196,12 +248,8 @@ function add_bot(name)
         id = pid,
         connid = nil,
         name = name,
-        x = spawn_x,
-        y = spawn_y,
         dx = 0,
         dy = 0,
-        gold = initial_gold,
-        r = Combat.calc_radius(initial_gold, radius_base, radius_k),
         is_bot = true,
         ai_timer = 0,
         ai_dx = 0,
@@ -209,7 +257,9 @@ function add_bot(name)
         fx_speed_until = 0,
         fx_shield_until = 0,
         fx_magnet_until = 0,
-        zone_dmg_acc = 0
+        pending_split = false,
+        last_split = -merge_cooldown_s,
+        parts = { make_cell(spawn_x, spawn_y, initial_gold, 0, 0, 0) }
     }
 
     players[pid] = p
@@ -224,9 +274,10 @@ function remove_player_by_conn(connid)
 
     local p = players[pid]
     if p ~= nil then
-        -- 离场落盘金币
-        DB.update_gold(p.name, p.id, p.gold)
-        print("[World] Player " .. p.name .. " saved gold: " .. tostring(p.gold) .. " and left.")
+        -- 离场落盘金币（全部细胞总和）
+        local total = total_gold(p)
+        DB.update_gold(p.name, p.id, total)
+        print("[World] Player " .. p.name .. " saved gold: " .. tostring(total) .. " and left.")
     end
 
     players[pid] = nil
@@ -260,6 +311,71 @@ function set_player_move(connid, in_dx, in_dy)
     p.dy = my
 end
 
+-- 请求分裂（C++ recv 回调中调用：只置标记，真正的分裂在主循环 World.update 完成，
+-- 因为新细胞 table 必须在主循环上下文创建才能跨帧存活）
+function request_split(connid)
+    local pid = conn_to_pid[connid]
+    if pid == nil then return end
+    local p = players[pid]
+    if p ~= nil then
+        p.pending_split = true
+    end
+end
+
+-- ---- 世界聊天 ----
+
+-- 去掉首尾空白（fakelua string 走 ECMAScript 正则，不支持 Lua 模式）
+local function trim_chat(s)
+    local a = string.gsub(s, "^[ \t\r\n]+", "")
+    local b = string.gsub(a, "[ \t\r\n]+$", "")
+    return b
+end
+
+-- 提交聊天（C++ recv 回调中调用：校验、节流、写入 recent 并入广播队列，
+-- 真正的 ws 发送全部留在主循环，与 feast/zone 同一模式）
+function submit_chat(connid, content)
+    if not chat_enable or chat_recent == nil then return end
+    local pid = conn_to_pid[connid]
+    if pid == nil then return end
+    local p = players[pid]
+    if p == nil then return end
+
+    -- 节流：记录上次发言的世界时间（主循环读 world_time 时为同一个值，安全）
+    if p.last_chat ~= nil and (world_time - p.last_chat) < chat_cooldown_s then
+        return
+    end
+
+    local text = trim_chat(content)
+    if #text == 0 then return end
+    if #text > chat_max_len then
+        text = string.sub(text, 1, chat_max_len)
+    end
+
+    p.last_chat = world_time
+    local entry = { name = p.name, content = text, t = math.floor(world_time) }
+    table.insert(chat_recent, entry)
+    if #chat_recent > chat_history then
+        table.remove(chat_recent, 1)
+    end
+
+    -- 入待广播队列（主循环 drain 后发给所有人）
+    table.insert(pending_responses, { connid = -1, tbl = {
+        type = "chat",
+        name = p.name,
+        content = text
+    } })
+end
+
+-- 新进场玩家读取最近聊天（登录后由前端主动请求，或直接随首帧下发）
+function get_recent_chat()
+    if chat_recent == nil then return {} end
+    local out = {}
+    for i = 1, #chat_recent do
+        table.insert(out, chat_recent[i])
+    end
+    return out
+end
+
 function get_player_by_conn(connid)
     local pid = conn_to_pid[connid]
     if pid == nil then return nil end
@@ -270,16 +386,341 @@ function get_conn_by_pid(pid)
     return pid_to_conn[pid]
 end
 
--- 吞噬结算落盘（机器人不落盘、不计战绩）
-function persist_settlement(eater, victim)
-    if not eater.is_bot then
-        DB.update_gold(eater.name, eater.id, eater.gold)
-        DB.add_kill(eater.name)
+-- ---- 分裂 ----
+
+-- 执行分裂（必须在主循环调用）：每个达条件的细胞分出一半金币给新细胞，
+-- 新细胞沿当前移动方向获得冲量；受 split_max_cells 上限约束
+local function do_split(p)
+    local ncells = #p.parts
+    if ncells >= split_max_cells then return end
+
+    local sdx = p.dx
+    local sdy = p.dy
+    if sdx == 0 and sdy == 0 then
+        -- 没有移动意图时默认向上分裂
+        sdx = 0
+        sdy = -1
     end
-    if not victim.is_bot then
-        DB.update_gold(victim.name, victim.id, victim.gold)
-        DB.add_death(victim.name)
+
+    local new_cells = {}
+    for i = 1, ncells do
+        if #p.parts + #new_cells >= split_max_cells then break end
+        local c = p.parts[i]
+        if c.gold > split_min_gold then
+            local half = math.floor(c.gold / 2)
+            if half >= 1 then
+                c.gold = c.gold - half
+                c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+                local nx = c.x + sdx * (c.r + 6)
+                local ny = c.y + sdy * (c.r + 6)
+                local nc = make_cell(nx, ny, half, sdx * split_impulse, sdy * split_impulse, world_time)
+                table.insert(new_cells, nc)
+            end
+        end
     end
+
+    if #new_cells > 0 then
+        for i = 1, #new_cells do
+            table.insert(p.parts, new_cells[i])
+        end
+        p.last_split = world_time
+        print("[World] " .. p.name .. " split into " .. tostring(#p.parts) .. " cells")
+    end
+end
+
+-- 吞噬结算落盘（机器人不落盘；只有完全淘汰才记 kills/deaths）
+local function settle_persist(eater_p, victim_p, full)
+    if not eater_p.is_bot then
+        DB.update_gold(eater_p.name, eater_p.id, total_gold(eater_p))
+        if full then DB.add_kill(eater_p.name) end
+    end
+    if not victim_p.is_bot then
+        DB.update_gold(victim_p.name, victim_p.id, total_gold(victim_p))
+        if full then DB.add_death(victim_p.name) end
+    end
+end
+
+-- E（{pp,c}）吃掉 V 的一个细胞；最后一个细胞被吃 → 整人复活，否则只是部分损失
+local function eat_one_cell(E, V, eat_events, died_events)
+    local eaten_gold = V.c.gold
+    local vp = V.pp
+
+    E.c.gold = E.c.gold + eaten_gold
+    E.c.r = Combat.calc_radius(E.c.gold, radius_base, radius_k)
+
+    -- 按对象身份定位被吃细胞的下标后移除
+    local ri = 0
+    for k = 1, #vp.parts do
+        if vp.parts[k] == V.c then ri = k end
+    end
+    if ri > 0 then table.remove(vp.parts, ri) end
+    V.c.alive = false
+
+    if #vp.parts == 0 then
+        local rx, ry = get_random_spawn()
+        vp.parts = { make_cell(rx, ry, initial_gold, 0, 0, world_time) }
+        vp.dx = 0
+        vp.dy = 0
+        table.insert(eat_events, {
+            eater_id = E.pp.id, victim_id = vp.id, gold = eaten_gold, full = true
+        })
+        table.insert(died_events, {
+            victim_id = vp.id, gold = initial_gold, x = rx, y = ry
+        })
+        settle_persist(E.pp, vp, true)
+    else
+        table.insert(eat_events, {
+            eater_id = E.pp.id, victim_id = vp.id, gold = eaten_gold, partial = true
+        })
+        settle_persist(E.pp, vp, false)
+    end
+end
+
+-- 逻辑帧更新（update 过大曾触发 "too many registers"，各阶段拆分为独立函数）
+
+-- 阶段 0+1：处理分裂请求 + 拾取金币（每细胞独立）
+local function step_split_and_pickup()
+    for pid, p in pairs(players) do
+        if p.pending_split then
+            p.pending_split = false
+            do_split(p)
+        end
+    end
+
+    for pid, p in pairs(players) do
+        -- 机器人达到金币软上限后不再被动拾取，避免无限膨胀；吞噬玩家不受影响
+        if not (p.is_bot and total_gold(p) >= bot_max_gold) then
+          for ci = 1, #p.parts do
+            local c = p.parts[ci]
+            local pickup_r = c.r
+            if world_time < p.fx_magnet_until then
+                pickup_r = c.r * 4
+            end
+            for fi = 1, #food_coins do
+                local f = food_coins[fi]
+                local fdx = c.x - f.x
+                local fdy = c.y - f.y
+                if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
+                    c.gold = c.gold + food_val
+                    c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+                    f.x = math.random(50, map_width - 50)
+                    f.y = math.random(50, map_height - 50)
+                end
+            end
+            -- 金币雨奖励豆：吃掉即移除（显式长度 n，避开 P1-9：while 条件里的 #t 会被提升）
+            local n = #bonus_food
+            local bi = 1
+            while bi <= n do
+                local f = bonus_food[bi]
+                local fdx = c.x - f.x
+                local fdy = c.y - f.y
+                if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
+                    c.gold = c.gold + food_val
+                    c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+                    table.remove(bonus_food, bi)
+                    n = n - 1
+                else
+                    bi = bi + 1
+                end
+            end
+          end
+        end
+    end
+end
+
+-- 阶段 1.5：拾取道具（任一细胞碰到即对整人生效），返回事件列表
+local function step_pickup_powerups()
+    local powerup_events = {}
+    for pid, p in pairs(players) do
+        for ci = 1, #p.parts do
+            local c = p.parts[ci]
+            for pi = 1, #powerups do
+                local pw = powerups[pi]
+                local pdx = c.x - pw.x
+                local pdy = c.y - pw.y
+                if (pdx * pdx + pdy * pdy) < (c.r * c.r) then
+                    if pw.kind == "speed" then
+                        p.fx_speed_until = world_time + fx_speed_s
+                    elseif pw.kind == "shield" then
+                        p.fx_shield_until = world_time + fx_shield_s
+                    elseif pw.kind == "magnet" then
+                        p.fx_magnet_until = world_time + fx_magnet_s
+                    end
+                    table.insert(powerup_events, { player_id = p.id, name = p.name, kind = pw.kind })
+
+                    -- 道具随机换位补给
+                    pw.x = math.random(60, map_width - 60)
+                    pw.y = math.random(60, map_height - 60)
+                end
+            end
+        end
+    end
+    return powerup_events
+end
+
+-- 阶段 2：移动积分（方向 + 分裂冲量衰减）+ 边界
+local merge_pull = 2.0  -- 冷却后细胞向群体质心吸附的速率（1/秒）
+local function step_movement(dt)
+    for pid, p in pairs(players) do
+        -- 全部细胞都过合体冷却 → 计算金币加权质心，稍后施加吸附
+        local all_old = true
+        local gsum = 0
+        local wxs = 0
+        local wys = 0
+        for ci = 1, #p.parts do
+            local c0 = p.parts[ci]
+            if world_time - c0.born < merge_cooldown_s then
+                all_old = false
+            end
+            gsum = gsum + c0.gold
+            wxs = wxs + c0.x * c0.gold
+            wys = wys + c0.y * c0.gold
+        end
+        local ux = 0
+        local uy = 0
+        if all_old and gsum > 0 then
+            ux = wxs / gsum
+            uy = wys / gsum
+        end
+
+        for ci = 1, #p.parts do
+            local c = p.parts[ci]
+            local speed_factor = 1.0 / (1.0 + (c.r - radius_base) * 0.003)
+            if world_time < p.fx_speed_until then
+                speed_factor = speed_factor * 1.5
+            end
+            if p.dx ~= 0 or p.dy ~= 0 or c.vx ~= 0 or c.vy ~= 0 then
+                local cur_speed = move_speed * speed_factor
+                c.x = c.x + p.dx * cur_speed * dt + c.vx * dt
+                c.y = c.y + p.dy * cur_speed * dt + c.vy * dt
+
+                -- 冲量摩擦衰减（用 0-x 而非一元负号：numeric 特化不支持 unary minus）
+                local decay = math.exp(0 - split_friction * dt)
+                c.vx = c.vx * decay
+                c.vy = c.vy * decay
+                if math.abs(c.vx) < 1 then c.vx = 0 end
+                if math.abs(c.vy) < 1 then c.vy = 0 end
+            end
+
+            -- 冷却结束：温和吸附向质心，帮助细胞靠拢合体（Bot 分裂后也靠它回归）
+            if all_old and #p.parts > 1 then
+                c.x = c.x + (ux - c.x) * merge_pull * dt
+                c.y = c.y + (uy - c.y) * merge_pull * dt
+            end
+
+            -- 边界限制
+            if c.x < c.r then c.x = c.r end
+            if c.x > map_width - c.r then c.x = map_width - c.r end
+            if c.y < c.r then c.y = c.r end
+            if c.y > map_height - c.r then c.y = map_height - c.r end
+        end
+    end
+end
+
+-- 阶段 2.5：安全区伤害（每细胞独立，小数累积掉金币）
+local function step_zone_damage(dt)
+    if not zone_enable or zone == nil then return end
+    for pid, p in pairs(players) do
+        for ci = 1, #p.parts do
+            local c = p.parts[ci]
+            local zdx = c.x - zone.x
+            local zdy = c.y - zone.y
+            if (zdx * zdx + zdy * zdy) > (zone.r * zone.r) then
+                c.zone_acc = c.zone_acc + zone_dps * dt
+                if c.zone_acc >= 1.0 then
+                    local lose = math.floor(c.zone_acc)
+                    c.zone_acc = c.zone_acc - lose
+                    c.gold = c.gold - lose
+                    if c.gold < 0 then c.gold = 0 end
+                    c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+                end
+            else
+                c.zone_acc = 0
+            end
+        end
+    end
+end
+
+-- 阶段 2.6：同体细胞合体（冷却后交叠即合并，金币加权取中心）
+local function step_merge()
+    for pid, p in pairs(players) do
+        local merged_any = true
+        while merged_any do
+            merged_any = false
+            local n = #p.parts
+            local found = false
+            local i = 1
+            while i <= n and not found do
+                local j = i + 1
+                while j <= n and not found do
+                    local a = p.parts[i]
+                    local b = p.parts[j]
+                    if world_time - a.born >= merge_cooldown_s
+                       and world_time - b.born >= merge_cooldown_s then
+                        local mdx = a.x - b.x
+                        local mdy = a.y - b.y
+                        local md = math.sqrt(mdx * mdx + mdy * mdy)
+                        if md < a.r + b.r then
+                            local g = a.gold + b.gold
+                            local mx = (a.x * a.gold + b.x * b.gold) / g
+                            local my = (a.y * a.gold + b.y * b.gold) / g
+                            -- 先删大下标，避免小下标移位
+                            table.remove(p.parts, j)
+                            table.remove(p.parts, i)
+                            table.insert(p.parts, make_cell(mx, my, g, 0, 0, world_time))
+                            found = true
+                            merged_any = true
+                        end
+                    end
+                    j = j + 1
+                end
+                i = i + 1
+            end
+        end
+    end
+end
+
+-- 阶段 3：跨玩家细胞碰撞检测与吞噬结算，返回 eat_events, died_events
+local function step_combat()
+    local eat_events = {}
+    local died_events = {}
+
+    -- 拍平成细胞列表（在合体之后构建，无陈旧细胞）
+    local world_cells = {}
+    for pid, p in pairs(players) do
+        for i = 1, #p.parts do
+            table.insert(world_cells, { pp = p, c = p.parts[i] })
+        end
+    end
+
+    local cc = #world_cells
+    for i = 1, cc do
+        local E = world_cells[i]
+        if E.c.alive then
+            for j = i + 1, cc do
+                local V = world_cells[j]
+                if V.c.alive and E.pp.id ~= V.pp.id then
+                    local res = Combat.check_eat(
+                        E.c.x, E.c.y, E.c.r, E.c.gold,
+                        V.c.x, V.c.y, V.c.r, V.c.gold, eat_ratio)
+                    -- 护盾生效中的受害者免于吞噬
+                    if res == 1 and world_time < V.pp.fx_shield_until then
+                        res = 0
+                    elseif res == 2 and world_time < E.pp.fx_shield_until then
+                        res = 0
+                    end
+
+                    if res == 1 then
+                        eat_one_cell(E, V, eat_events, died_events)
+                    elseif res == 2 then
+                        eat_one_cell(V, E, eat_events, died_events)
+                    end
+                end
+            end
+        end
+    end
+
+    return eat_events, died_events
 end
 
 -- 逻辑帧更新
@@ -288,209 +729,47 @@ end
 function update(dt)
     world_time = world_time + dt
 
-    -- 1. 拾取地面积分金币（磁铁生效时拾取半径 x4；奖励豆吃掉即移除）
-    for pid, p in pairs(players) do
-        local pickup_r = p.r
-        if world_time < p.fx_magnet_until then
-            pickup_r = p.r * 4
-        end
-        for fi = 1, #food_coins do
-            local f = food_coins[fi]
-            local fdx = p.x - f.x
-            local fdy = p.y - f.y
-            if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
-                p.gold = p.gold + food_val
-                p.r = Combat.calc_radius(p.gold, radius_base, radius_k)
-                f.x = math.random(50, map_width - 50)
-                f.y = math.random(50, map_height - 50)
-            end
-        end
-        -- 奖励豆：吃掉即移除（n 为显式维护的长度，吃豆后手动 -1）。
-        -- 不能直接写 `while bi <= #bonus_food`：fakelua CGen 会把原生 while 条件里的
-        -- #t 取到函数级临时变量只算一次，循环内 table.remove 缩短表后条件仍用旧长度，
-        -- 导致读到越界 nil（详见 docs/fakelua-pitfalls.md P1-9）。
-        local n = #bonus_food
-        local bi = 1
-        while bi <= n do
-            local f = bonus_food[bi]
-            local fdx = p.x - f.x
-            local fdy = p.y - f.y
-            if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
-                p.gold = p.gold + food_val
-                p.r = Combat.calc_radius(p.gold, radius_base, radius_k)
-                table.remove(bonus_food, bi)
-                n = n - 1
-            else
-                bi = bi + 1
-            end
-        end
-    end
+    step_split_and_pickup()
 
-    -- 1.5 拾取道具并应用效果
-    local powerup_events = {}
-    for pid, p in pairs(players) do
-        for pi = 1, #powerups do
-            local pw = powerups[pi]
-            local pdx = p.x - pw.x
-            local pdy = p.y - pw.y
-            if (pdx * pdx + pdy * pdy) < (p.r * p.r) then
-                if pw.kind == "speed" then
-                    p.fx_speed_until = world_time + fx_speed_s
-                elseif pw.kind == "shield" then
-                    p.fx_shield_until = world_time + fx_shield_s
-                elseif pw.kind == "magnet" then
-                    p.fx_magnet_until = world_time + fx_magnet_s
-                end
-                table.insert(powerup_events, { player_id = p.id, name = p.name, kind = pw.kind })
+    local powerup_events = step_pickup_powerups()
 
-                -- 道具随机换位补给
-                pw.x = math.random(60, map_width - 60)
-                pw.y = math.random(60, map_height - 60)
-            end
-        end
-    end
+    step_movement(dt)
 
-    -- 2. 玩家移动积分与边界约束
-    for pid, p in pairs(players) do
-        if p.dx ~= 0 or p.dy ~= 0 then
-            -- 大球移动略慢，体验更平衡：实际速度 = base_speed / (1 + r * 0.005)
-            local speed_factor = 1.0 / (1.0 + (p.r - radius_base) * 0.003)
-
-            -- 加速道具生效中 x1.5
-            if world_time < p.fx_speed_until then
-                speed_factor = speed_factor * 1.5
-            end
-            local cur_speed = move_speed * speed_factor
-
-            p.x = p.x + p.dx * cur_speed * dt
-            p.y = p.y + p.dy * cur_speed * dt
-
-            -- 边界限制
-            if p.x < p.r then p.x = p.r end
-            if p.x > map_width - p.r then p.x = map_width - p.r end
-            if p.y < p.r then p.y = p.r end
-            if p.y > map_height - p.r then p.y = map_height - p.r end
-        end
-    end
-
-    -- 2.5 安全区伤害：球心在安全圈外持续流失金币（小数累积，保证低 dps 也生效）
-    if zone_enable and zone ~= nil then
-        for pid, p in pairs(players) do
-            local zdx = p.x - zone.x
-            local zdy = p.y - zone.y
-            if (zdx * zdx + zdy * zdy) > (zone.r * zone.r) then
-                p.zone_dmg_acc = p.zone_dmg_acc + zone_dps * dt
-                if p.zone_dmg_acc >= 1.0 then
-                    local lose = math.floor(p.zone_dmg_acc)
-                    p.zone_dmg_acc = p.zone_dmg_acc - lose
-                    p.gold = p.gold - lose
-                    if p.gold < 0 then p.gold = 0 end
-                    p.r = Combat.calc_radius(p.gold, radius_base, radius_k)
-                end
-            else
-                p.zone_dmg_acc = 0
-            end
-        end
-    end
-
-    -- 2. 碰撞检测与吞噬结算
-    local eat_events = {}
-    local died_events = {}
-
-    local pid_list = {}
-    for pid, _ in pairs(players) do
-        table.insert(pid_list, pid)
-    end
-
-    local count = #pid_list
-    for i = 1, count do
-        local id1 = pid_list[i]
-        local p1 = players[id1]
-
-        if p1 ~= nil then
-            for j = i + 1, count do
-                local id2 = pid_list[j]
-                local p2 = players[id2]
-
-                if p2 ~= nil then
-                    local res = Combat.check_eat(p1.x, p1.y, p1.r, p1.gold, p2.x, p2.y, p2.r, p2.gold, eat_ratio)
-                    -- 护盾生效中的受害者免于吞噬
-                    if res == 1 and world_time < p2.fx_shield_until then
-                        res = 0
-                    elseif res == 2 and world_time < p1.fx_shield_until then
-                        res = 0
-                    end
-
-                    if res == 1 then
-                        -- p1 吃掉 p2
-                        local eaten_gold = p2.gold
-                        p1.gold = p1.gold + eaten_gold
-                        p1.r = Combat.calc_radius(p1.gold, radius_base, radius_k)
-
-                        -- p2 复活重置
-                        p2.gold = initial_gold
-                        p2.r = Combat.calc_radius(p2.gold, radius_base, radius_k)
-                        local rx, ry = get_random_spawn()
-                        p2.x = rx
-                        p2.y = ry
-                        p2.dx = 0
-                        p2.dy = 0
-
-                        table.insert(eat_events, { eater_id = p1.id, victim_id = p2.id, gold = eaten_gold })
-                        table.insert(died_events, { victim_id = p2.id, gold = p2.gold, x = p2.x, y = p2.y })
-
-                        persist_settlement(p1, p2)
-
-                    elseif res == 2 then
-                        -- p2 吃掉 p1
-                        local eaten_gold = p1.gold
-                        p2.gold = p2.gold + eaten_gold
-                        p2.r = Combat.calc_radius(p2.gold, radius_base, radius_k)
-
-                        -- p1 复活重置
-                        p1.gold = initial_gold
-                        p1.r = Combat.calc_radius(p1.gold, radius_base, radius_k)
-                        local rx, ry = get_random_spawn()
-                        p1.x = rx
-                        p1.y = ry
-                        p1.dx = 0
-                        p1.dy = 0
-
-                        table.insert(eat_events, { eater_id = p2.id, victim_id = p1.id, gold = eaten_gold })
-                        table.insert(died_events, { victim_id = p1.id, gold = p1.gold, x = p1.x, y = p1.y })
-
-                        persist_settlement(p2, p1)
-                    end
-                end
-            end
-        end
-    end
+    step_zone_damage(dt)
+    step_merge()
+    local eat_events, died_events = step_combat()
 
     return eat_events, died_events, powerup_events
 end
 
--- 生成场景快照数据
+-- 生成场景快照数据（每个细胞一条，cell 为细胞序号）
 function get_snapshot()
     local snap_list = {}
     for pid, p in pairs(players) do
-        local entry = {
-            id = p.id,
-            name = p.name,
-            x = math.floor(p.x * 10) / 10,
-            y = math.floor(p.y * 10) / 10,
-            gold = p.gold,
-            r = math.floor(p.r * 10) / 10
-        }
-        if p.is_bot then entry.bot = true end
         -- 当前生效中的道具特效（按护盾 > 加速 > 磁铁优先展示）
+        local fx = nil
         if world_time < p.fx_shield_until then
-            entry.fx = "shield"
+            fx = "shield"
         elseif world_time < p.fx_speed_until then
-            entry.fx = "speed"
+            fx = "speed"
         elseif world_time < p.fx_magnet_until then
-            entry.fx = "magnet"
+            fx = "magnet"
         end
-        table.insert(snap_list, entry)
+        for ci = 1, #p.parts do
+            local c = p.parts[ci]
+            local entry = {
+                id = p.id,
+                cell = ci,
+                name = p.name,
+                x = math.floor(c.x * 10) / 10,
+                y = math.floor(c.y * 10) / 10,
+                gold = c.gold,
+                r = math.floor(c.r * 10) / 10
+            }
+            if p.is_bot then entry.bot = true end
+            if fx ~= nil then entry.fx = fx end
+            table.insert(snap_list, entry)
+        end
     end
 
     -- 合并普通金币豆与金币雨奖励豆（奖励豆吃掉即消失）
