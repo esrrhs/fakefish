@@ -40,6 +40,11 @@
     const zoneHudDetail = document.getElementById("zone-hud-detail");
     const dangerVignette = document.getElementById("danger-vignette");
 
+    const chatBox = document.getElementById("chat-box");
+    const chatMessages = document.getElementById("chat-messages");
+    const chatInput = document.getElementById("chat-input");
+    const chatSendBtn = document.getElementById("chat-send");
+
     // 控制输入状态
     const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false };
     let mousePos = { active: false, x: 0, y: 0 };
@@ -149,6 +154,9 @@
             leaderboard.classList.add("hidden");
             zoneHud.classList.add("hidden");
             dangerVignette.classList.remove("active");
+            chatBox.classList.add("hidden");
+            setChatOpen(false);
+            chatMessages.innerHTML = "";
             zone = null;
         };
 
@@ -182,9 +190,14 @@
                 authModal.classList.add("hidden");
                 hud.classList.remove("hidden");
                 leaderboard.classList.remove("hidden");
+                chatBox.classList.remove("hidden");
+                chatOpen = false;
                 hudName.innerText = myName;
                 showToast(`欢迎进入竞技场，${myName}！`, "success");
                 requestRank();
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: "get_chat" }));
+                }
                 break;
 
             case "login_fail":
@@ -230,6 +243,14 @@
                 break;
 
             case "pong":
+                break;
+
+            case "chat":
+                appendChatMessage(msg);
+                break;
+
+            case "chat_history":
+                renderChatHistory(Array.isArray(msg.list) ? msg.list : []);
                 break;
         }
     }
@@ -414,6 +435,64 @@
         return found;
     }
 
+    // ---- 世界聊天 ----
+
+    const CHAT_MAX_VISIBLE = 8;  // 面板最多同时显示条数
+    let chatOpen = false;        // 输入框是否激活（激活时键盘不驱动移动）
+
+    // 追加一条气泡到面板
+    function appendChatMessage(msg) {
+        const item = document.createElement("div");
+        item.className = "chat-line";
+        const name = document.createElement("span");
+        name.className = "chat-name";
+        name.innerText = (msg.name || "玩家") + ":";
+        const text = document.createElement("span");
+        text.className = "chat-text";
+        text.innerText = msg.content || "";
+        item.appendChild(name);
+        item.appendChild(text);
+        if (msg.name === myName) item.classList.add("chat-mine");
+        chatMessages.appendChild(item);
+        while (chatMessages.children.length > CHAT_MAX_VISIBLE) {
+            chatMessages.removeChild(chatMessages.firstChild);
+        }
+        // 新消息短暂高亮面板（输入框关闭时也能注意到）
+        chatBox.classList.add("chat-buzz");
+        clearTimeout(appendChatMessage._t);
+        appendChatMessage._t = setTimeout(() => chatBox.classList.remove("chat-buzz"), 600);
+    }
+
+    // 登录后渲染服务端下发的最近历史
+    function renderChatHistory(list) {
+        chatMessages.innerHTML = "";
+        for (const m of list) {
+            appendChatMessage({ name: m.name, content: m.content });
+        }
+    }
+
+    // 打开/关闭聊天输入
+    function setChatOpen(open) {
+        chatOpen = open;
+        if (open) {
+            chatInput.value = "";
+            chatInput.focus();
+        } else {
+            chatInput.blur();
+            window.focus();
+        }
+    }
+
+    // 发送当前输入内容
+    function sendChat() {
+        const text = chatInput.value.trim();
+        if (text && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "chat", content: text }));
+        }
+        chatInput.value = "";
+        if (chatOpen) setChatOpen(false);
+    }
+
     function handleEatEvent(msg) {
         const eater = findBiggestCellById(msg.eater_id);
         const victim = findBiggestCellById(msg.victim_id);
@@ -525,9 +604,56 @@
         mousePos.active = false;
     });
 
+    // ---- 聊天事件绑定 ----
+
+    chatSendBtn.addEventListener("click", sendChat);
+
+    // 输入框内：Enter 发送、Esc 关闭
+    chatInput.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+            e.preventDefault();
+            sendChat();
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            setChatOpen(false);
+        }
+    });
+
+    // 聊天框未激活时：Enter 打开聊天（避免与移动键冲突）
+    window.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !chatOpen && isConnected && localPlayerId) {
+            const tag = document.activeElement && document.activeElement.tagName;
+            if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "BUTTON") {
+                e.preventDefault();
+                setChatOpen(true);
+            }
+        }
+    });
+
+    // 快捷表情：事件委托读取 data-text，直接发送
+    document.getElementById("chat-quick").addEventListener("click", (e) => {
+        const btn = e.target.closest(".chat-emote");
+        if (btn && btn.dataset.text) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "chat", content: btn.dataset.text }));
+            }
+        }
+    });
+
     // 定期向服务器发送移动意图
     function updateInput() {
         if (!isConnected || !localPlayerId) return;
+
+        // 聊天输入激活时停止上报移动，避免按键被当成移动指令
+        if (chatOpen) {
+            if (lastDx ~= 0 || lastDy ~= 0) {
+                lastDx = 0;
+                lastDy = 0;
+                ws.send(JSON.stringify({ type: "move", dx: 0, dy: 0 }));
+            }
+            return;
+        }
 
         let dx = 0;
         let dy = 0;

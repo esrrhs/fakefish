@@ -45,3 +45,9 @@ game:
   split_impulse: 480       # 分裂新细胞初速度（单位/秒）
   split_friction: 3.2      # 分裂冲量衰减系数（越大停得越快）
   merge_cooldown_s: 12     # 分裂后细胞合体冷却秒数
+
+  # 世界聊天
+  chat_enable: true        # 是否启用世界聊天
+  chat_max_len: 80         # 单条消息最大字节数
+  chat_history: 20         # 服务端保留的最近消息条数
+  chat_cooldown_s: 2       # 同一玩家发消息最小间隔秒数

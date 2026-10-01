@@ -58,6 +58,22 @@
         <!-- 圈外危险红雾 -->
         <div id="danger-vignette"></div>
 
+        <!-- 世界聊天 -->
+        <div id="chat-box" class="hidden">
+            <div id="chat-messages"></div>
+            <div id="chat-quick">
+                <button class="chat-emote" type="button" data-text="你好 👋">👋</button>
+                <button class="chat-emote" type="button" data-text="哈哈 😄">😄</button>
+                <button class="chat-emote" type="button" data-text="对不起 🙏">🙏</button>
+                <button class="chat-emote" type="button" data-text="干得漂亮 👍">👍</button>
+                <button class="chat-emote" type="button" data-text="救命 🆘">🆘</button>
+            </div>
+            <div id="chat-input-row">
+                <input type="text" id="chat-input" maxlength="80" placeholder="Enter 打开 / 发送，Esc 关闭" autocomplete="off">
+                <button id="chat-send" type="button">发送</button>
+            </div>
+        </div>
+
         <!-- 提示消息通知浮窗 -->
         <div id="notification-box"></div>
 

@@ -234,6 +234,121 @@ body, html {
     50% { opacity: 1; }
 }
 
+/* ---- 世界聊天 ---- */
+#chat-box {
+    position: absolute;
+    left: 16px;
+    bottom: 96px;
+    width: 300px;
+    z-index: 15;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#chat-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.chat-line {
+    align-self: flex-start;
+    max-width: 100%;
+    background: rgba(15, 23, 42, 0.72);
+    border-radius: 6px;
+    padding: 2px 8px;
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+.chat-line.chat-mine {
+    align-self: flex-end;
+    background: rgba(30, 58, 95, 0.78);
+}
+
+.chat-name {
+    color: #93c5fd;
+    margin-right: 4px;
+}
+
+.chat-mine .chat-name {
+    color: #7dd3fc;
+}
+
+.chat-text {
+    color: #e2e8f0;
+}
+
+/* 新消息提示：面板轻微提亮 */
+#chat-box.chat-buzz {
+    animation: chat-buzz 0.6s ease;
+}
+
+@keyframes chat-buzz {
+    0% { filter: brightness(1); }
+    35% { filter: brightness(1.6); }
+    100% { filter: brightness(1); }
+}
+
+#chat-quick {
+    display: flex;
+    gap: 4px;
+}
+
+.chat-emote {
+    flex: 1;
+    background: rgba(15, 23, 42, 0.72);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 6px;
+    font-size: 14px;
+    line-height: 1;
+    padding: 3px 0;
+    cursor: pointer;
+}
+
+.chat-emote:hover {
+    background: rgba(51, 65, 85, 0.9);
+    border-color: rgba(148, 163, 184, 0.55);
+}
+
+#chat-input-row {
+    display: flex;
+    gap: 4px;
+}
+
+#chat-input {
+    flex: 1;
+    min-width: 0;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 6px;
+    color: #e2e8f0;
+    font-size: 13px;
+    padding: 4px 8px;
+}
+
+#chat-input:focus {
+    outline: none;
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 1px #60a5fa;
+}
+
+#chat-send {
+    background: rgba(37, 99, 235, 0.85);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 13px;
+    padding: 4px 12px;
+    cursor: pointer;
+}
+
+#chat-send:hover {
+    background: rgba(37, 99, 235, 1);
+}
+
 .lb-gold {
     color: #fbbf24;
     font-weight: 600;
