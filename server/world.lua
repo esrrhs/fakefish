@@ -1,12 +1,15 @@
 package "World"
 
-local map_width = 2000
-local map_height = 2000
-local initial_gold = 100
-local move_speed = 160
-local radius_base = 15
-local radius_k = 2.5
-local eat_ratio = 1.05
+-- 以下数值配置会在 init() 的 apply_config 中重赋值。fakelua 规定文件级「数值字面量
+-- 初始化」的 local 是 static const、禁止再赋值，因此一律先声明 nil（非数值初始化，
+-- 不进常量表），初值只通过配置/默认值在 apply_config 里设置。
+local map_width = nil
+local map_height = nil
+local initial_gold = nil
+local move_speed = nil
+local radius_base = nil
+local radius_k = nil
+local eat_ratio = nil
 
 -- 在线玩家表: player_id -> player_record
 local players = nil
@@ -22,20 +25,20 @@ local next_bot_id = nil
 local world_time = nil
 
 local food_coins = nil
-local max_food = 80
-local food_val = 5
+local max_food = 80        -- 常量：普通金币豆数量，不接受配置重赋值
+local food_val = 5         -- 常量：每颗金币豆价值
 
 -- 道具：加速 / 护盾 / 磁铁
 local powerups = nil
-local powerup_count = 5
-local fx_speed_s = 6
-local fx_shield_s = 5
-local fx_magnet_s = 8
+local powerup_count = nil
+local fx_speed_s = nil
+local fx_shield_s = nil
+local fx_magnet_s = nil
 
 -- 金币雨（feast）事件
 local bonus_food = nil
-local feast_bonus = 30
-local feast_interval_s = 0
+local feast_bonus = 30     -- 常量：每次金币雨豆数
+local feast_interval_s = nil
 -- 心跳世界事件状态（timer 回调只写这里的字段，send 全部留在主循环）
 local world_events = nil
 
@@ -43,26 +46,26 @@ local world_events = nil
 local chat_recent = nil
 
 -- 动态安全区（收缩毒圈）
-local bot_max_gold = 2000  -- 机器人金币软上限（达上限后不再被动拾取）
+local bot_max_gold = nil   -- 机器人金币软上限（达上限后不再被动拾取）
 local zone = nil
-local zone_enable = true
-local zone_initial_r = 1500
-local zone_min_r = 250
-local zone_shrink_ratio = 0.7
-local zone_shrink_interval_s = 60
-local zone_hold_s = 30
-local zone_dps = 20
+local zone_enable = true   -- bool：非常量规则仅约束数值字面量，可保留
+local zone_initial_r = nil
+local zone_min_r = nil
+local zone_shrink_ratio = nil
+local zone_shrink_interval_s = nil
+local zone_hold_s = nil
+local zone_dps = nil
 
 -- 分裂球（多细胞）
 local chat_enable = true
-local chat_max_len = 80       -- 单条消息最大字节数
-local chat_history = 20       -- 保留最近消息条数
-local chat_cooldown_s = 2     -- 同一玩家发消息最小间隔
-local split_max_cells = 8       -- 每名玩家最多细胞数
-local split_min_gold = 100      -- 细胞金币严格大于此值才可分裂
-local split_impulse = 480       -- 分裂新细胞初速度（单位/秒）
-local split_friction = 3.2      -- 冲量衰减系数（越大停得越快）
-local merge_cooldown_s = 12     -- 分裂后需经过的秒数，细胞间才允许合体
+local chat_max_len = nil       -- 单条消息最大字节数
+local chat_history = nil       -- 保留最近消息条数
+local chat_cooldown_s = nil    -- 同一玩家发消息最小间隔
+local split_max_cells = nil    -- 每名玩家最多细胞数
+local split_min_gold = nil     -- 细胞金币严格大于此值才可分裂
+local split_impulse = nil      -- 分裂新细胞初速度（单位/秒）
+local split_friction = nil     -- 冲量衰减系数（越大停得越快）
+local merge_cooldown_s = nil   -- 分裂后需经过的秒数，细胞间才允许合体
 
 -- 待发送响应队列（由 NetWs.on_event 回调中入队，主循环 drain）
 -- 放在 World 模块的 upvalue 中，绕过 NetWs 回调上下文的 const 限制

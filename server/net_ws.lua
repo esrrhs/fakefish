@@ -1,7 +1,8 @@
 package "NetWs"
 
 local ws_server_obj = nil
-local ws_port = 8081
+-- init() 中重赋值，数值字面量初始化的文件级 local 是 static const（禁止再赋值），声明 nil
+local ws_port = nil
 
 -- WebSocket 事件分发（C++ 回调入口）
 -- 注意：在此回调中不能修改本模块的 local upvalue（fakelua const 限制），
