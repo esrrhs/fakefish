@@ -172,8 +172,6 @@ function reload(names)
     end
 
     -- 阶段 2：编译（save 失败的模块跳过编译）
-    -- 注意：必须先把调用结果存入 local 再写表——c_gen 对「t[k]=函数调用()」会把
-    -- 调用表达式重复编译两次（执行两次！），local 中转则只调用一次
     local compile_ok = {}
     for i = 1, #targets do
         local name = targets[i]
@@ -181,8 +179,7 @@ function reload(names)
         if save_failed[name] ~= nil then
             compile_ok[name] = false
         else
-            local compiled = host.compile_file(entry.file)
-            compile_ok[name] = compiled
+            compile_ok[name] = host.compile_file(entry.file)
         end
     end
 
