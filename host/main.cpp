@@ -45,6 +45,26 @@ int main(int argc, char **argv) {
     cfg.debug_mode = false;
     cfg.disable_jit[JIT_TCC] = true;
 
+    // 热更支持：注册原生函数 host.compile_file，供 Lua 在主循环中触发单模块重编译。
+    // fakelua 单线程模型下与主循环同线程重入编译是安全的；重编译会 Merge 替换同名函数地址，
+    // 跨包调用经 FakeluaCallByName 运行时按名查找，即刻命中新版本。
+    RegisterNativeFunction(s, "host.compile_file", 1, false,
+                           [cfg](State *state, CVar *args, int n) -> CVar {
+                               // 4=String, 5=StringId（见 fakelua VarType，公共头未暴露）
+                               if (n < 1 || (args[0].type_ != 4 && args[0].type_ != 5)) {
+                                   return inter::NativeToFakeluaBool(state, false);
+                               }
+                               const std::string path = inter::FakeluaToNativeString(state, args[0]);
+                               try {
+                                   CompileFile(state, path, cfg);
+                                   return inter::NativeToFakeluaBool(state, true);
+                               } catch (const std::exception &e) {
+                                   std::cerr << "[FakeFish] hotfix compile failed for " << path
+                                             << ": " << e.what() << std::endl;
+                                   return inter::NativeToFakeluaBool(state, false);
+                               }
+                           });
+
     // 按依赖顺序预编译各核心逻辑模块
     const std::vector<std::string> module_files = {
         "server/config.lua",
@@ -53,6 +73,7 @@ int main(int argc, char **argv) {
         "server/auth.lua",
         "server/world.lua",
         "server/bot.lua",
+        "server/hotreload.lua",
         "server/net_ws.lua",
         "server/http_static.lua",
         script_path

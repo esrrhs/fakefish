@@ -92,6 +92,15 @@ function on_event(type, connid, data, len, reason)
             if p ~= nil then
                 p.pending_chat = { type = "chat_history", list = World.get_recent_chat() }
             end
+
+        elseif mtype == "hotfix" then
+            -- 运维通道：token 校验失败直接入队失败响应；通过则只入队请求，
+            -- 编译由主循环 HotReload.process() 执行（回调上下文不允许重编译）
+            if not HotReload.check_token(msg["token"]) then
+                World.enqueue_response(connid, { type = "hotfix_result", ok = false, err = "invalid token" })
+            else
+                HotReload.request(connid, msg["modules"])
+            end
         end
 
     elseif type == "close" then
