@@ -34,6 +34,9 @@ function start(config_path)
     -- 3.5 生成 AI 机器人
     Bot.init(game_cfg)
 
+    -- 3.8 初始化热更通道（需在 WS 服务启动前就绪）
+    HotReload.init(srv_cfg)
+
     -- 4. 启动 WebSocket 游戏服务
     if not NetWs.init(srv_cfg) then
         print("[Main] Failed to start WebSocket server! Terminating.")
@@ -98,7 +101,10 @@ function start(config_path)
         -- 发送登录响应（通过 p.connid，与 broadcast 同路径，确保跨平台一致）
         NetWs.flush_login_responses()
 
-        -- flush 其他暂存消息（register_fail, pong 等）
+        -- 热更请求处理（结果入 World 响应队列，下一行 flush 发出）
+        HotReload.process()
+
+        -- flush 其他暂存消息（register_fail, pong, hotfix_result 等）
         NetWs.flush_pending()
 
         -- 排行缓存刷新已改由 timer 心跳调度（Main.on_heartbeat 每 5s 一次）

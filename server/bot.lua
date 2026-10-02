@@ -202,3 +202,40 @@ function update(dt)
         p.dy = p.ai_dy
     end
 end
+
+-- 热更：bots 里引用的是 World 的玩家 table。世界热更后玩家表会被整体重建，
+-- 这里不能保存旧 table 引用（新代码访问旧 spec 表会跳进已卸载的旧 world.so），
+-- 只存 id 列表；restore 时按 id 到（可能已重建的）世界里重新绑定。
+-- 快照同样用 plain table 构造。
+function hotfix_save()
+    local s = {}
+    s["bot_count"] = bot_count
+    s["bot_max_gold"] = bot_max_gold
+    local ids = {}
+    if bots ~= nil then
+        for i = 1, #bots do
+            ids[i] = bots[i].id
+        end
+    end
+    s["bot_ids"] = ids
+    return s
+end
+
+-- 热更：按 id 到当前世界重绑；找不到（世界未迁移且实体已消失）则跳过
+function hotfix_restore(s)
+    if s == nil then return end
+    bot_count = s["bot_count"]
+    bot_max_gold = s["bot_max_gold"]
+    local list = {}
+    local all = World.get_all_players()
+    local ids = s["bot_ids"]
+    if ids ~= nil then
+        for i = 1, #ids do
+            local p = all[ids[i]]
+            if p ~= nil then
+                table.insert(list, p)
+            end
+        end
+    end
+    bots = list
+end

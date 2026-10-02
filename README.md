@@ -25,7 +25,8 @@
 | 权威服务端：移动、碰撞、吃球、金币结算 | 客户端预测、插值物理权威 |
 | MySQL 持久化账号与金币 | 多进程/多线程分片、跨服 |
 | 单 HTML/JS 页面可玩 | 复杂 UI 框架、移动端 App |
-| 配置文件启动（含 MySQL 等） | 热更、运维后台 |
+| 配置文件启动（含 MySQL 等） | 运维后台 |
+| 脚本热更（hotfix，逻辑不重启） | 跨服、多线程分片 |
 
 ### 3. 架构总览
 
@@ -92,6 +93,7 @@
 | `chat` | `content` | 发送世界聊天（服务器裁剪、限长并按玩家节流） |
 | `get_chat` | 无 | 请求最近聊天历史 |
 | `get_rank` | 可选 `limit`（默认 10，最大 20） | 请求历史最佳排行 |
+| `hotfix` | `token`，可选 `modules[]` | 热更指定模块（省略 modules = 全部可热更模块）；token 须匹配 `server.hotfix_token` |
 | `ping` | 可选 `t` | 心跳 |
 
 > 服务器会踢掉 `game.conn_timeout_s`（默认 15 秒）内没有任何消息的空闲连接，客户端应周期发送 `ping` 保活。
@@ -110,6 +112,7 @@
 | `eat` | `eater_id`, `victim_id`, `eater_name`, `victim_name`, `gold` | 吃球事件（可驱动特效与击杀播报） |
 | `you_died` | `gold`, `x`, `y` | 自己被吃后复活信息 |
 | `rank` | `list[]` | 历史最佳排行（按 `best_gold` 降序，来自 MySQL） |
+| `hotfix_result` | `results[]`，或顶层 `ok=false, err` | 热更结果：每项 `{module, ok, err?}`；鉴权失败时为顶层错误 |
 | `chat` | `name`, `content` | 世界聊天：某玩家发来一条消息 |
 | `chat_history` | `list[]` | 进场时下发的最近聊天历史 |
 | `error` | `reason` | 通用错误 |
@@ -127,6 +130,7 @@
 | `world` | 玩家实体表、移动积分、边界 |
 | `bot` | AI 机器人（觅食/追击/逃跑/游荡），复用 World 实体与 Combat 结算 |
 | `combat` | 碰撞检测与吃球结算 |
+| `hotreload` | 热更编排：统一快照 → 调宿主 `host.compile_file` 重编译 → 状态迁移恢复 |
 | `net_ws` | WS 收发包、JSON 编解码、广播 |
 | `http_static` | 托管前端静态页 + HTTP JSON API（排行/统计） |
 
@@ -139,6 +143,8 @@ server:
   http_port: 8080          # 静态前端
   ws_port: 8081            # 游戏 WebSocket
   tick_ms: 50              # 逻辑帧间隔约 20Hz
+  hotfix_token: ""         # 热更鉴权 token，留空则拒绝一切 hotfix 请求
+  hotfix_watch: false      # true 时每秒检测可热更脚本变更并自动热更
 
 mysql:
   host: 127.0.0.1
@@ -176,6 +182,35 @@ curl http://127.0.0.1:8080/api/stats
 ```
 
 未知 `/api/*` 路由返回 404 JSON；`../` 目录穿越一律 403。
+
+### 8.6 热更（Hotfix）
+
+服务器运行中替换脚本逻辑、不重启进程、不断连接。
+
+**机制**
+
+- FakeLua 的跨包调用在运行时按函数名查找（`FakeluaCallByName`）；对同一 `State` 重新 `CompileFile` 会 Merge 替换同名函数地址，此后新调用即命中新版本。
+- 可热更模块：`combat`（纯函数无状态）、`world`、`bot`（有状态）。`config/db/net_ws/http_static/main/hotreload` 持有原生资源句柄或正处于调用栈中，不允许热更。
+- 有状态模块实现 `hotfix_save()` 与 `hotfix_restore(snap)`。重编译前由旧代码产出快照，重编译后由新代码迁移状态。
+- `world` 热更时 `bot` 作为伴随模块同步迁移（玩家表整体重建后，bot 持有的旧引用会失效），按玩家 id 到新世界重新绑定。
+- 关键点：静态 key 的 table 构造器会被编译器特化成 spec 表（访问函数位于模块 .so）。因此状态迁移时用 `pairs` 遍历旧表（直接读内部数组、不触发 spec 间接调用），并用「空 `{}` + 动态赋值」在新 .so 上下文重建所有表。
+- 任一模块编译失败：旧代码继续运行，不做恢复，错误在 `hotfix_result` 中逐项报告。
+
+**用法**
+
+配置 token（`server.hotfix_token`，留空则拒绝一切请求），然后通过 WebSocket 发送：
+
+```json
+{ "type": "hotfix", "token": "your_token", "modules": ["combat", "world"] }
+```
+
+`modules` 省略表示全部可热更模块。回复：
+
+```json
+{ "type": "hotfix_result", "results": [ { "module": "combat", "ok": true } ] }
+```
+
+也可把 `server.hotfix_watch` 置为 `true`：服务器每秒比对可热更脚本文件内容，检测到变更即自动热更，结果写入服务器日志。
 
 ### 9. 前端表现
 
@@ -329,6 +364,15 @@ fakefish/
 - [x] 快捷表情按钮（👋😄🙏👍🆘）一键发送；自己的消息右对齐高亮，新消息面板短暂提亮
 - [x] 可经 `chat_enable: false` 关闭
 
+### Phase 12 — 热更
+
+- [x] 宿主注册原生函数 `host.compile_file`：运行中对同一 State 重编译单模块（Merge 替换同名函数地址）
+- [x] `hotreload` 模块编排：编译前统一快照 → 编译 → 新代码状态迁移；单模块失败不阻断其他模块
+- [x] `world`/`bot` 实现 `hotfix_save`/`hotfix_restore`；bot 按 id 重绑，作为 world 热更的伴随模块
+- [x] 迁移时以 pairs 遍历旧 spec 表、在新 .so 上下文重建为 plain table，规避 spec 函数指针失效
+- [x] `server.hotfix_token` 鉴权、`server.hotfix_watch` 文件变更自动热更
+- [x] 端到端测试脚本（`test_hotfix.js`，含机器人场景）并纳入 CI
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -342,6 +386,7 @@ fakefish/
 9. **M9**：安全区周期性收缩与重置、圈外持续掉金币、快照/事件同步、Bot 主动向圈心规避：**已通过**
 10. **M10**：细胞分裂弹出、部分吞噬、冷却后吸附合体、多细胞 HUD/排行榜/相机：**已通过**
 11. **M11**：世界聊天收发、发言节流与限长、进场历史同步、聊天面板与快捷表情：**已通过**
+12. **M12**：运行中热更脚本逻辑、不重启不断连、世界状态与机器人完整保留：**已通过**
 
 ---
 
@@ -403,6 +448,7 @@ http://127.0.0.1:8080
 ```bash
 npm install ws
 node test_combat.js
+node test_hotfix.js    # 需 config.yaml 配置 hotfix_token: "test123"
 node test_bots.js
 ```
 

@@ -1,8 +1,10 @@
 server:
   http_port: 8080          # 静态前端服务端口
-  ws_port: 8081            # 游戏 WebSocket 服务端口
+  ws_port: 8081            # 游戏 WebSocket 端口
   tick_ms: 50              # 逻辑帧间隔 (50ms ~ 20Hz)
   web_dir: "web"           # 静态页面资源目录
+  hotfix_token: ""         # 热更鉴权 token：留空则拒绝一切热更请求
+  hotfix_watch: false      # true 时每秒检查可热更脚本文件变更并自动热更
 
 mysql:
   host: "127.0.0.1"

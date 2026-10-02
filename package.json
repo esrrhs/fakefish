@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node test_client.js && node test_combat.js",
     "test:client": "node test_client.js",
-    "test:combat": "node test_combat.js"
+    "test:combat": "node test_combat.js",
+    "test:hotfix": "node test_hotfix.js"
   },
   "dependencies": {
     "ws": "^8.22.0"

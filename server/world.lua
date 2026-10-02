@@ -70,6 +70,9 @@ local merge_cooldown_s = 12     -- 分裂后需经过的秒数，细胞间才允
 -- 否则 fakelua JIT 会将其标记为 const table，在 C++ 回调中 table.insert 会报错
 local pending_responses = nil
 
+-- 启动时传入的游戏配置表（热更后用于重放配置标量）
+local game_cfg = nil
+
 -- 入队待发送消息（供 NetWs.on_event 回调调用）
 function enqueue_response(connid, tbl)
     table.insert(pending_responses, { connid = connid, tbl = tbl })
@@ -104,14 +107,9 @@ function spawn_powerups()
     end
 end
 
-function init(cfg)
-    players = {}
-    conn_to_pid = {}
-    pid_to_conn = {}
-    pending_responses = {}
-    next_bot_id = 800000
-    world_time = 0
-    if cfg == nil then cfg = {} end
+-- 应用配置标量（init 与 hotfix_restore 共用）
+-- yaml 配置为权威；未配置项取当前（新）代码里的默认值——热更后改 lua 默认值即生效
+local function apply_config(cfg)
     map_width = cfg["map_width"] or 2000
     map_height = cfg["map_height"] or 2000
     initial_gold = cfg["initial_gold"] or 100
@@ -124,15 +122,12 @@ function init(cfg)
     fx_shield_s = cfg["fx_shield_s"] or 5
     fx_magnet_s = cfg["fx_magnet_s"] or 8
     feast_interval_s = cfg["feast_interval_s"] or 0
-    bonus_food = {}
-    world_events = { sec = 0, feast = nil }
 
     chat_enable = cfg["chat_enable"]
     if chat_enable == nil then chat_enable = true end
     chat_max_len = cfg["chat_max_len"] or 80
     chat_history = cfg["chat_history"] or 20
     chat_cooldown_s = cfg["chat_cooldown_s"] or 2
-    chat_recent = {}
 
     zone_enable = cfg["zone_enable"]
     if zone_enable == nil then zone_enable = true end
@@ -149,6 +144,21 @@ function init(cfg)
     split_impulse = cfg["split_impulse"] or 480
     split_friction = cfg["split_friction"] or 3.2
     merge_cooldown_s = cfg["merge_cooldown_s"] or 12
+end
+
+function init(cfg)
+    players = {}
+    conn_to_pid = {}
+    pid_to_conn = {}
+    pending_responses = {}
+    next_bot_id = 800000
+    world_time = 0
+    if cfg == nil then cfg = {} end
+    game_cfg = cfg
+    apply_config(cfg)
+    bonus_food = {}
+    world_events = { sec = 0, feast = nil }
+    chat_recent = {}
 
     -- 初始安全区居中、覆盖整张地图（phase 0；next_in 为距下次收缩秒数）
     zone = {
@@ -164,6 +174,63 @@ function init(cfg)
     spawn_powerups()
     print("[World] Initialized with map " .. tostring(map_width) .. "x" .. tostring(map_height)
           .. ", " .. tostring(max_food) .. " gold pellets, " .. tostring(powerup_count) .. " powerups")
+end
+
+-- 热更：保存全部运行时状态。
+-- 注意：必须用「空构造器 + 动态赋值」得到 plain table。静态 key 的构造器会被编译器
+-- 特化成 spec 表，其 get 函数在本模块 .so 里——.so 卸载后，新代码读这张快照就会跳进
+-- 已卸载的旧代码。快照值里的旧 spec 表，restore 侧只用 pairs 遍历（直接读内部数组，
+-- 不触发 spec_get 间接调用）。
+function hotfix_save()
+    local s = {}
+    s["game_cfg"] = game_cfg
+    s["players"] = players
+    s["conn_to_pid"] = conn_to_pid
+    s["pid_to_conn"] = pid_to_conn
+    s["next_bot_id"] = next_bot_id
+    s["world_time"] = world_time
+    s["food_coins"] = food_coins
+    s["powerups"] = powerups
+    s["bonus_food"] = bonus_food
+    s["world_events"] = world_events
+    s["chat_recent"] = chat_recent
+    s["zone"] = zone
+    s["pending_responses"] = pending_responses
+    return s
+end
+
+-- 深拷贝：在新 .so 上下文重建所有表。空 {} + 动态赋值产出 plain table，
+-- 其访问走 hash 路径（内联代码，没有指向旧 .so 的间接调用）。
+local function migrate(v)
+    if type(v) == "table" then
+        local c = {}
+        for k, x in pairs(v) do
+            c[k] = migrate(x)
+        end
+        return c
+    end
+    return v
+end
+
+-- 热更：新版本代码把旧世界整体迁移重建后接回，再重放配置标量
+function hotfix_restore(s)
+    if s == nil then return end
+    game_cfg = migrate(s["game_cfg"])
+    if game_cfg ~= nil then
+        apply_config(game_cfg)
+    end
+    players = migrate(s["players"])
+    conn_to_pid = migrate(s["conn_to_pid"])
+    pid_to_conn = migrate(s["pid_to_conn"])
+    next_bot_id = s["next_bot_id"]
+    world_time = s["world_time"]
+    food_coins = migrate(s["food_coins"])
+    powerups = migrate(s["powerups"])
+    bonus_food = migrate(s["bonus_food"])
+    world_events = migrate(s["world_events"])
+    chat_recent = migrate(s["chat_recent"])
+    zone = migrate(s["zone"])
+    pending_responses = migrate(s["pending_responses"])
 end
 
 function get_map_info()

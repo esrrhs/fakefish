@@ -93,6 +93,8 @@ jobs:
           sed -i 's/password: ""/password: "changeme"/' config.yaml
           # Disable bots for the deterministic client/combat phase (re-enabled before test_bots.js)
           sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml && rm -f config.yaml.bak
+          # Configure hotfix token used by test_hotfix.js
+          sed -i.bak 's/hotfix_token: ""/hotfix_token: "test123"/' config.yaml && rm -f config.yaml.bak
           # Speed up the feast gold-rain cycle so test_feast.js sees one quickly
           sed -i.bak 's/feast_interval_s: 120/feast_interval_s: 12/' config.yaml && rm -f config.yaml.bak
           # Speed up the safe-zone shrink/hold cycle so test_zone.js sees a full cycle
@@ -150,6 +152,10 @@ jobs:
           # Run split/merge test (bot-free world, default merge cooldown)
           echo "=== Running Split E2E Test ==="
           node test_split.js
+
+          # Run hotfix test (rewrites server/combat.lua temporarily, restored at end)
+          echo "=== Running Hotfix E2E Test ==="
+          node test_hotfix.js
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
@@ -249,6 +255,8 @@ jobs:
           cp config.example.yaml config.yaml
           # Disable bots for the deterministic client/combat phase (re-enabled before test_bots.js)
           sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml && rm -f config.yaml.bak
+          # Configure hotfix token used by test_hotfix.js
+          sed -i.bak 's/hotfix_token: ""/hotfix_token: "test123"/' config.yaml && rm -f config.yaml.bak
           # Speed up the feast gold-rain cycle so test_feast.js sees one quickly
           sed -i.bak 's/feast_interval_s: 120/feast_interval_s: 12/' config.yaml && rm -f config.yaml.bak
           # Speed up the safe-zone shrink/hold cycle so test_zone.js sees a full cycle
@@ -306,6 +314,10 @@ jobs:
           # Run split/merge test (bot-free world, default merge cooldown)
           echo "=== Running Split E2E Test ==="
           node test_split.js
+
+          # Run hotfix test (rewrites server/combat.lua temporarily, restored at end)
+          echo "=== Running Hotfix E2E Test ==="
+          node test_hotfix.js
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
