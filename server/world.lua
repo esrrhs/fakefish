@@ -577,7 +577,8 @@ local function step_split_and_pickup()
                     f.y = math.random(50, map_height - 50)
                 end
             end
-            -- 金币雨奖励豆：吃掉即移除（显式长度 n，避开 P1-9：while 条件里的 #t 会被提升）
+            -- 金币雨奖励豆：吃掉即移除（显式长度 n——P1-9 截至 fakelua 598632f 仍未修：
+            -- while 条件里的 #t 会被提升只求值一次，table.remove 后读到越界 nil）
             local n = #bonus_food
             local bi = 1
             while bi <= n do
@@ -664,8 +665,8 @@ local function step_movement(dt)
                 c.x = c.x + p.dx * cur_speed * dt + c.vx * dt
                 c.y = c.y + p.dy * cur_speed * dt + c.vy * dt
 
-                -- 冲量摩擦衰减（用 0-x 而非一元负号：numeric 特化不支持 unary minus）
-                local decay = math.exp(0 - split_friction * dt)
+                -- 冲量摩擦衰减
+                local decay = math.exp(-split_friction * dt)
                 c.vx = c.vx * decay
                 c.vy = c.vy * decay
                 if math.abs(c.vx) < 1 then c.vx = 0 end
