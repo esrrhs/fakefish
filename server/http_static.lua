@@ -46,9 +46,7 @@ function on_request(typ, connid, req)
     end
 
     -- 防止目录穿越
-    -- 注意：fakelua 的 string.find 第四参 plain=true 为纯子串查找；
-    -- 默认走 ECMAScript 正则（boost::regex），Lua 模式转义（如 %.）语义完全不同
-    if string.find(path, "..", 1, true) ~= nil then
+    if string.find(path, "%.%.") ~= nil then
         return {
             status = 403,
             body = "Forbidden"
@@ -99,7 +97,7 @@ local function parse_limit(query)
         local pos = string.find(query, "limit=")
         if pos ~= nil then
             local raw = string.sub(query, pos + 6)
-            local num = string.match(raw, "^[0-9]+")
+            local num = string.match(raw, "^%d+")
             if num ~= nil then
                 limit = tonumber(num) or 10
             end

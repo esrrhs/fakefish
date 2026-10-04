@@ -25,9 +25,12 @@ function expectedRadius(gold, extra) {
 }
 
 // 发 hotfix 请求并等待对应的 hotfix_result
+// 超时放宽到 30s：world 热更要重编译 world(137 函数) + bot(19 函数)，
+// 每个文件跑 TCC + GCC 两轮 JIT，本机实测往返 6.2-6.8s。10s 在共享 CI
+// runner 上余量仅 1.5 倍，降速即误报 timeout（功能本身正常）。
 function hotfix(modules, token) {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('hotfix_result timeout')), 10000);
+        const timer = setTimeout(() => reject(new Error('hotfix_result timeout')), 30000);
         const handler = (m) => {
             const d = JSON.parse(m.data);
             if (d.type === 'hotfix_result') {

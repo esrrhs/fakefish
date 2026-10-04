@@ -23,6 +23,9 @@ game:
   radius_base: 15          # 基础半径
   radius_k: 2.5            # 半径系数：r = base + k * sqrt(gold)
   eat_ratio: 1.05          # 吞噬阈值：大球半径 >= 小球半径 * ratio
+  eat_tie_equal: true      # 同金币兜底：双方金币相等（常见于都被毒圈扣到 0）时按 player_id
+                          # 小的一方吞噬，避免半径同为下限时 check_eat 恒不成立而互相卡死；
+                          # 置 false 恢复严格「必须严格更大」规则
   bot_count: 3             # AI 机器人数量（0 关闭）
   bot_max_gold: 2000       # 机器人金币软上限，达到后只游荡不再主动觅食/猎杀
   conn_timeout_s: 15       # 心跳超时秒数，超时无任何消息的连接将被踢下线

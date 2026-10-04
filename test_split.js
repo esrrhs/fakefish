@@ -240,8 +240,18 @@ async function runSplitTest() {
     const eatenInWindow = pelletsEaten(foodBefore, foodCounts(twoCellSnap));
     console.log(`Split OK: cells=${cells.length}, gold=${goldRightAfter}, separation=${Math.round(sep)}, pellets eaten in window=${eatenInWindow}`);
 
-    // 分裂本身不创造/销毁金币；窗口内金币增量必须恰好等于吃掉的豆数 × 5
-    if (goldRightAfter !== goldBeforeSplit + eatenInWindow * FOOD_VAL) {
+    // 分裂本身不创造/销毁金币；窗口内金币增量必须恰好等于吃掉的豆数 × 5。
+    // 注意这只在「无机器人」的世界里成立：金币豆被吃掉后会移到新坐标，快照里的
+    // 豆集合减少既可能是本玩家吃的、也可能是 bot 吃的，两者无法区分。有 bot 时
+    // 用下面的宽松断言（分裂前后金币不减少），避免误报。
+    const botsPresent = lastSnap.players.some(p => p.bot === true || p.id >= 800000);
+    if (botsPresent) {
+        console.log("  (bots present: skipping strict gold conservation, they can eat pellets too)");
+        if (goldRightAfter < goldBeforeSplit) {
+            console.error(`FAIL: gold decreased across split: ${goldBeforeSplit} -> ${goldRightAfter}`);
+            process.exit(1);
+        }
+    } else if (goldRightAfter !== goldBeforeSplit + eatenInWindow * FOOD_VAL) {
         console.error(`FAIL: gold not conserved after split: ${goldBeforeSplit} -> ${goldRightAfter}`
             + ` (expected ${goldBeforeSplit + eatenInWindow * FOOD_VAL}, ${eatenInWindow} pellets eaten)`);
         process.exit(1);
@@ -271,8 +281,10 @@ async function runSplitTest() {
         console.error(`FAIL: cells did not merge after 60s, still ${after.length}: ${cur}`);
         process.exit(1);
     }
-    // 合体后金币不减少：等待期间细胞始终在安全区内，只可能吃到金币豆
-    if (after[0].gold < goldRightAfter) {
+    // 合体后金币不减少：等待期间细胞始终在安全区内，只可能吃到金币豆。
+    // 有 bot 时该前提不成立（细胞可能被 bot 吃掉而损失金币），故跳过此断言——
+    // 合体本身已由上面的「after.length === 1」验证。
+    if (!botsPresent && after[0].gold < goldRightAfter) {
         console.error(`FAIL: gold lost after merge: expected >= ${goldRightAfter}, got ${after[0].gold}`);
         process.exit(1);
     }
