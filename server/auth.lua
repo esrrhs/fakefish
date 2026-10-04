@@ -11,11 +11,7 @@ end
 -- 用户名只允许字母/数字/下划线，杜绝 SQL 注入与特殊字符问题
 local function is_valid_username(username)
     if username == nil or #username < 2 or #username > 20 then return false end
-    for i = 1, #username do
-        local b = string.byte(username, i)
-        local ok = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95
-        if not ok then return false end
-    end
+    if string.match(username, "^[%w_]+$") == nil then return false end
     return true
 end
 

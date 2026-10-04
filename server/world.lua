@@ -10,6 +10,9 @@ local move_speed = nil
 local radius_base = nil
 local radius_k = nil
 local eat_ratio = nil
+-- 同金币兜底吞噬（默认开启）：双方金币相等时按 player_id 裁决，
+-- 避免双方都被毒圈扣到 0、半径同为下限时 check_eat 恒返回 0 造成的互相卡死。
+local eat_tie_equal = nil
 
 -- 在线玩家表: player_id -> player_record
 local players = nil
@@ -120,6 +123,8 @@ local function apply_config(cfg)
     radius_base = cfg["radius_base"] or 15
     radius_k = cfg["radius_k"] or 2.5
     eat_ratio = cfg["eat_ratio"] or 1.05
+    eat_tie_equal = cfg["eat_tie_equal"]
+    if eat_tie_equal == nil then eat_tie_equal = true end
     powerup_count = cfg["powerup_count"] or 5
     fx_speed_s = cfg["fx_speed_s"] or 6
     fx_shield_s = cfg["fx_shield_s"] or 5
@@ -394,10 +399,10 @@ end
 
 -- ---- 世界聊天 ----
 
--- 去掉首尾空白（fakelua string 走 ECMAScript 正则，不支持 Lua 模式）
+-- 去掉首尾空白
 local function trim_chat(s)
-    local a = string.gsub(s, "^[ \t\r\n]+", "")
-    local b = string.gsub(a, "[ \t\r\n]+$", "")
+    local a = string.gsub(s, "^%s+", "")
+    local b = string.gsub(a, "%s+$", "")
     return b
 end
 
@@ -577,11 +582,9 @@ local function step_split_and_pickup()
                     f.y = math.random(50, map_height - 50)
                 end
             end
-            -- 金币雨奖励豆：吃掉即移除（显式长度 n——P1-9 截至 fakelua 598632f 仍未修：
-            -- while 条件里的 #t 会被提升只求值一次，table.remove 后读到越界 nil）
-            local n = #bonus_food
+            -- 金币雨奖励豆：吃掉即移除（while 条件每轮重算 #bonus_food）
             local bi = 1
-            while bi <= n do
+            while bi <= #bonus_food do
                 local f = bonus_food[bi]
                 local fdx = c.x - f.x
                 local fdy = c.y - f.y
@@ -589,7 +592,6 @@ local function step_split_and_pickup()
                     c.gold = c.gold + food_val
                     c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
                     table.remove(bonus_food, bi)
-                    n = n - 1
                 else
                     bi = bi + 1
                 end
@@ -773,7 +775,8 @@ local function step_combat()
                 if V.c.alive and E.pp.id ~= V.pp.id then
                     local res = Combat.check_eat(
                         E.c.x, E.c.y, E.c.r, E.c.gold,
-                        V.c.x, V.c.y, V.c.r, V.c.gold, eat_ratio)
+                        V.c.x, V.c.y, V.c.r, V.c.gold, eat_ratio,
+                        eat_tie_equal, E.pp.id, V.pp.id)
                     -- 护盾生效中的受害者免于吞噬
                     if res == 1 and world_time < V.pp.fx_shield_until then
                         res = 0
