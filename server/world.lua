@@ -735,8 +735,19 @@ local function step_merge()
                         local md = math.sqrt(mdx * mdx + mdy * mdy)
                         if md < a.r + b.r then
                             local g = a.gold + b.gold
-                            local mx = (a.x * a.gold + b.x * b.gold) / g
-                            local my = (a.y * a.gold + b.y * b.gold) / g
+                            local mx = 0
+                            local my = 0
+                            if g > 0 then
+                                mx = (a.x * a.gold + b.x * b.gold) / g
+                                my = (a.y * a.gold + b.y * b.gold) / g
+                            else
+                                -- 两细胞金币都被毒圈扣到 0 时，金币加权中心会除零得到 NaN。
+                                -- NaN 会骗过后续所有比较（边界钳制、吞噬判定里 NaN < x 恒为
+                                -- false），细胞将永久卡死并随快照广播污染所有客户端，
+                                -- 因此退化为算术平均。
+                                mx = (a.x + b.x) / 2
+                                my = (a.y + b.y) / 2
+                            end
                             -- 先删大下标，避免小下标移位
                             table.remove(p.parts, j)
                             table.remove(p.parts, i)
@@ -772,7 +783,10 @@ local function step_combat()
         if E.c.alive then
             for j = i + 1, cc do
                 local V = world_cells[j]
-                if V.c.alive and E.pp.id ~= V.pp.id then
+                -- E.c.alive 必须在每次配对时重查：E 可能在上一轮配对中被 V 吃掉，
+                -- 此时 E.c 已脱离 p.parts（金币已结算给吃掉它的一方）。若继续拿这个
+                -- 死细胞参与判定，它的金币会被第二次计入 → 金币凭空增发或凭空消失。
+                if E.c.alive and V.c.alive and E.pp.id ~= V.pp.id then
                     local res = Combat.check_eat(
                         E.c.x, E.c.y, E.c.r, E.c.gold,
                         V.c.x, V.c.y, V.c.r, V.c.gold, eat_ratio,
