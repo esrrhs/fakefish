@@ -70,11 +70,18 @@ function start(config_path)
 
     -- 6. 主事件循环驱动
     local frame = 0
+    local kick_acc = 0
     while true do
         frame = frame + 1
 
         -- 统一事件泵推进：驱动 socket IO、定时器、MySQL 等
         runtime.tick()
+
+        -- 异步登录/注册 SELECT 收尾（账号校验、进场必须在主循环上下文完成）
+        Auth.tick()
+
+        -- 同账号在别处登录时，通知并断开旧连接
+        NetWs.flush_kicks()
 
         -- 金币雨到期（timer 心跳置位）：主循环里撒豆并广播——
         -- 奖励豆 table 必须在主循环上下文创建才能跨帧存活，广播也不能进回调
@@ -93,8 +100,10 @@ function start(config_path)
             end
         end
 
-        -- 每秒一次：踢掉心跳超时的空闲连接
-        if frame % 20 == 0 then
+        -- 每秒一次：踢掉心跳超时的空闲连接（按累计时间判定，不依赖固定帧率）
+        kick_acc = kick_acc + dt
+        if kick_acc >= 1.0 then
+            kick_acc = 0
             NetWs.kick_idle(conn_timeout_s)
         end
 

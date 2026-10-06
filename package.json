@@ -3,10 +3,20 @@
   "version": "1.0.0",
   "description": "FakeFish - 2D PVP game server and web client demo powered by FakeLua",
   "scripts": {
-    "test": "node test_client.js && node test_combat.js",
+    "test": "npm run test:all",
+    "test:all": "node test_client.js && node test_auth.js && node test_combat.js && node test_api.js && node test_powerup.js && node test_feast.js && node test_zone.js && node test_split.js && node test_hotfix.js && node test_bots.js && node test_persist.js",
     "test:client": "node test_client.js",
+    "test:auth": "node test_auth.js",
     "test:combat": "node test_combat.js",
-    "test:hotfix": "node test_hotfix.js"
+    "test:api": "node test_api.js",
+    "test:powerup": "node test_powerup.js",
+    "test:feast": "node test_feast.js",
+    "test:zone": "node test_zone.js",
+    "test:split": "node test_split.js",
+    "test:hotfix": "node test_hotfix.js",
+    "test:bots": "node test_bots.js",
+    "test:persist": "node test_persist.js",
+    "test:gameplay": "node test_gameplay.js"
   },
   "dependencies": {
     "ws": "^8.22.0"

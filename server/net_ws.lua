@@ -12,6 +12,7 @@ local ws_port = nil
 function on_event(type, connid, data, len, reason)
     if type == "conn" then
         print("[NetWs] Client connected, connid=" .. tostring(connid))
+        World.mark_conn(connid)
 
     elseif type == "recv" then
         if data == nil or #data == 0 then return end
@@ -25,88 +26,77 @@ function on_event(type, connid, data, len, reason)
             return
         end
 
-        local mtype = msg["type"]
-
-        if mtype == "register" then
-            local username = msg["username"]
-            local password = msg["password"]
-            local success, res = Auth.handle_register(username, password)
-            if success then
-                -- 注册后自动进场
-                local p = World.add_player(connid, res)
-                -- 将 login_ok 响应存储在玩家记录上，主循环通过 p.connid 发送
-                p.pending_login_ok = {
-                    type = "login_ok",
-                    player_id = p.id,
-                    gold = p.gold,
-                    map = World.get_map_info()
-                }
-            else
-                World.enqueue_response(connid, { type = "register_fail", reason = tostring(res) })
-            end
-
-        elseif mtype == "login" then
-            local username = msg["username"]
-            local password = msg["password"]
-            local success, res = Auth.handle_login(username, password)
-            if success then
-                local p = World.add_player(connid, res)
-                p.pending_login_ok = {
-                    type = "login_ok",
-                    player_id = p.id,
-                    gold = p.gold,
-                    map = World.get_map_info()
-                }
-            else
-                World.enqueue_response(connid, { type = "login_fail", reason = tostring(res) })
-            end
-
-        elseif mtype == "move" then
-            local dx = msg["dx"] or 0
-            local dy = msg["dy"] or 0
-            World.set_player_move(connid, dx, dy)
-
-        elseif mtype == "split" then
-            World.request_split(connid)
-
-        elseif mtype == "chat" then
-            local content = msg["content"]
-            if content ~= nil and type_of(content) == "string" then
-                World.submit_chat(connid, content)
-            end
-
-        elseif mtype == "get_rank" then
-            -- 历史排行：直接读服务端缓存（DB.tick_refresh 周期从 MySQL/内存刷新）
-            -- 响应挂到玩家记录上，主循环经 p.connid 发送（Linux 上队列 connid 路径会静默失败）
-            local limit = msg["limit"] or 10
-            if limit > 20 then limit = 20 end
-            local p = World.get_player_by_conn(connid)
-            if p ~= nil then
-                p.pending_rank = { type = "rank", list = DB.get_top(limit) }
-            end
-
-        elseif mtype == "ping" then
-            World.enqueue_response(connid, { type = "pong" })
-
-        elseif mtype == "get_chat" then
-            local p = World.get_player_by_conn(connid)
-            if p ~= nil then
-                p.pending_chat = { type = "chat_history", list = World.get_recent_chat() }
-            end
-
-        elseif mtype == "hotfix" then
-            -- 运维通道：token 校验失败直接入队失败响应；通过则只入队请求，
-            -- 编译由主循环 HotReload.process() 执行（回调上下文不允许重编译）
-            if not HotReload.check_token(msg["token"]) then
-                World.enqueue_response(connid, { type = "hotfix_result", ok = false, err = "invalid token" })
-            else
-                HotReload.request(connid, msg["modules"])
-            end
+        -- 整个分发再包一层：恶意/畸形字段（number 传成 string 等）在 C++ 回调
+        -- 上下文抛错会中断本次派发，统一兜住并记日志，不能让单个坏包打挂连接处理
+        local route_ok, route_err = pcall(function() handle_message(connid, msg) end)
+        if not route_ok then
+            print("[NetWs] message handling error from connid=" .. tostring(connid)
+                  .. ": " .. tostring(route_err))
         end
 
     elseif type == "close" then
         print("[NetWs] Client disconnected, connid=" .. tostring(connid))
+        World.unmark_conn(connid)
         World.remove_player_by_conn(connid)
+    end
+end
+
+-- 单条已解码消息的路由（仅由 on_event 在 pcall 内调用）
+function handle_message(connid, msg)
+    local mtype = msg["type"]
+
+    if mtype == "register" then
+        -- 类型校验在 Auth.begin_register 内完成
+        Auth.begin_register(connid, msg["username"], msg["password"])
+
+    elseif mtype == "login" then
+        Auth.begin_login(connid, msg["username"], msg["password"])
+
+    elseif mtype == "move" then
+        local dx = msg["dx"]
+        local dy = msg["dy"]
+        -- 非数值方向直接丢弃，防止字符串进入 set_player_move 做算术抛错
+        if type_of(dx) == "number" and type_of(dy) == "number" then
+            World.set_player_move(connid, dx, dy)
+        end
+
+    elseif mtype == "split" then
+        World.request_split(connid)
+
+    elseif mtype == "chat" then
+        local content = msg["content"]
+        if content ~= nil and type_of(content) == "string" then
+            World.submit_chat(connid, content)
+        end
+
+    elseif mtype == "get_rank" then
+        -- 历史排行：直接读服务端缓存（DB.tick_refresh 周期从 MySQL/内存刷新）
+        -- 响应挂到玩家记录上，主循环经 p.connid 发送（Linux 上队列 connid 路径会静默失败）
+        local limit = msg["limit"]
+        if type_of(limit) ~= "number" then limit = 10 end
+        if limit > 20 then limit = 20 end
+        local p = World.get_player_by_conn(connid)
+        if p ~= nil then
+            p.pending_rank = { type = "rank", list = DB.get_top(limit) }
+        end
+
+    elseif mtype == "ping" then
+        World.enqueue_response(connid, { type = "pong" })
+
+    elseif mtype == "get_chat" then
+        local p = World.get_player_by_conn(connid)
+        if p ~= nil then
+            p.pending_chat = { type = "chat_history", list = World.get_recent_chat() }
+        end
+
+    elseif mtype == "hotfix" then
+        -- 运维通道：token 校验失败直接入队失败响应；通过则只入队请求，
+        -- 编译由主循环 HotReload.process() 执行（回调上下文不允许重编译）
+        if not HotReload.check_token(msg["token"]) then
+            World.enqueue_response(connid, { type = "hotfix_result", ok = false, err = "invalid token" })
+        else
+            HotReload.request(connid, msg["modules"])
+        end
     end
 end
 
@@ -172,6 +162,33 @@ function flush_pending()
         else
             send(item.connid, item.tbl)
         end
+    end
+end
+
+-- 通知并断开被同账号新会话顶替的旧连接（主循环调用，两阶段）：
+-- 先断开上一帧已通知的连接（给错误帧留出一个 IO 泵周期），再对本帧新入队的
+-- 旧连接下发 error 并排队到下一帧断开。
+-- close_connection 会同步派发 close 事件；add_player 已先解除旧 conn 的映射，
+-- 故事件里的 remove_player_by_conn 是 no-op，不会波及新会话。
+function flush_kicks()
+    if ws_server_obj == nil then return end
+
+    local closes = World.drain_pending_closes()
+    if closes ~= nil then
+        for i = 1, #closes do
+            ws_server_obj:close_connection(closes[i])
+        end
+    end
+
+    local kicks = World.drain_pending_kicks()
+    if kicks == nil then return end
+    for i = 1, #kicks do
+        local connid = kicks[i]
+        ws_server_obj:send(connid, json.encode({
+            type = "error",
+            reason = "账号已在别处登录"
+        }))
+        World.enqueue_pending_close(connid)
     end
 end
 

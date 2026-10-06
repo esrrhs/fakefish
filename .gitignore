@@ -1,5 +1,6 @@
 # Build / IDE
 build/
+build_*/
 cmake-build-*/
 .vscode/
 .idea/
@@ -23,5 +24,7 @@ Thumbs.db
 node_modules/
 package-lock.json
 server.log
+.workbuddy/
 .workbuddy-ai/
+config.persistence-test.yaml
 docs/fakelua-pitfalls.md

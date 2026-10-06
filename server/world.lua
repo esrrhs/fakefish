@@ -19,6 +19,15 @@ local players = nil
 local conn_to_pid = nil
 local pid_to_conn = nil
 
+-- 当前仍连着的 connid 集合（含只建连未登录的连接）：
+-- 异步登录查询往返期间连接可能已断开，主循环处理结果前据此判定是否还有效。
+local live_conns = nil
+-- 同账号在别处登录时，被顶替的旧 connid 队列；主循环通知后主动断开
+local pending_kicks = nil
+-- 已发踢人通知、下一帧再真正断开的 connid（给发送留出一个 IO 泵周期，
+-- 否则 send 入队后同帧 close_connection 会让错误帧来不及下发）
+local pending_closes = nil
+
 -- 机器人 ID 段（与 MySQL 自增账号 ID 区隔）
 -- 注意：不能在模块级赋常量初值（fakelua JIT 会将全常量赋值的标量标记为 const），
 -- 必须声明为 nil 并在 init() 中赋值
@@ -158,6 +167,9 @@ function init(cfg)
     players = {}
     conn_to_pid = {}
     pid_to_conn = {}
+    live_conns = {}
+    pending_kicks = {}
+    pending_closes = {}
     pending_responses = {}
     next_bot_id = 800000
     world_time = 0
@@ -195,6 +207,9 @@ function hotfix_save()
     s["players"] = players
     s["conn_to_pid"] = conn_to_pid
     s["pid_to_conn"] = pid_to_conn
+    s["live_conns"] = live_conns
+    s["pending_kicks"] = pending_kicks
+    s["pending_closes"] = pending_closes
     s["next_bot_id"] = next_bot_id
     s["world_time"] = world_time
     s["food_coins"] = food_coins
@@ -230,6 +245,12 @@ function hotfix_restore(s)
     players = migrate(s["players"])
     conn_to_pid = migrate(s["conn_to_pid"])
     pid_to_conn = migrate(s["pid_to_conn"])
+    live_conns = migrate(s["live_conns"])
+    if live_conns == nil then live_conns = {} end
+    pending_kicks = migrate(s["pending_kicks"])
+    if pending_kicks == nil then pending_kicks = {} end
+    pending_closes = migrate(s["pending_closes"])
+    if pending_closes == nil then pending_closes = {} end
     next_bot_id = s["next_bot_id"]
     world_time = s["world_time"]
     food_coins = migrate(s["food_coins"])
@@ -248,14 +269,68 @@ function get_map_info()
     }
 end
 
+-- 合并普通金币豆与金币雨奖励豆（供 Bot AI 觅食感知；快照也用同一视图）
 function get_foods()
-    return food_coins
+    local merged = {}
+    for i = 1, #food_coins do
+        table.insert(merged, food_coins[i])
+    end
+    if bonus_food ~= nil then
+        for i = 1, #bonus_food do
+            table.insert(merged, bonus_food[i])
+        end
+    end
+    return merged
 end
 
+-- 随机一个空位：优先落在安全区内且不与任何现存细胞交叠，
+-- 多次尝试失败则退化为最后一次随机点（极端拥挤时不应卡住进场/复活）
 function get_random_spawn()
     local margin = 100
-    local rx = math.random(margin, map_width - margin)
-    local ry = math.random(margin, map_height - margin)
+    local sr = Combat.calc_radius(initial_gold, radius_base, radius_k)
+
+    local rx = 0
+    local ry = 0
+    for try_n = 1, 16 do
+        rx = math.random(margin, map_width - margin)
+        ry = math.random(margin, map_height - margin)
+
+        if zone_enable and zone ~= nil then
+            local zdx = rx - zone.x
+            local zdy = ry - zone.y
+            if (zdx * zdx + zdy * zdy) > (zone.r - sr - 30) * (zone.r - sr - 30) then
+                -- 候选点在安全区外或贴边，重抽
+                if try_n < 16 then
+                    -- 直接以圈心附近重试，提高收缩后期的命中率
+                    local ang = math.random() * 6.28318
+                    local rr = math.random(0, math.max(0, math.floor(zone.r - sr - 60)))
+                    rx = zone.x + math.floor(math.cos(ang) * rr)
+                    ry = zone.y + math.floor(math.sin(ang) * rr)
+                    if rx < margin then rx = margin end
+                    if rx > map_width - margin then rx = map_width - margin end
+                    if ry < margin then ry = margin end
+                    if ry > map_height - margin then ry = map_height - margin end
+                end
+            end
+        end
+
+        local clear = true
+        for pid, p in pairs(players) do
+            for ci = 1, #p.parts do
+                local oc = p.parts[ci]
+                local dx = rx - oc.x
+                local dy = ry - oc.y
+                local min_d = oc.r + sr + 24
+                if (dx * dx + dy * dy) < min_d * min_d then
+                    clear = false
+                    break
+                end
+            end
+            if not clear then break end
+        end
+
+        if clear then return rx, ry end
+    end
     return rx, ry
 end
 
@@ -284,11 +359,90 @@ local function total_gold(p)
     return sum
 end
 
+-- 连接建立/断开登记（WS conn/close 事件调用）
+function mark_conn(connid)
+    if live_conns == nil then live_conns = {} end
+    live_conns[connid] = true
+end
+
+function unmark_conn(connid)
+    if live_conns == nil then return end
+    live_conns[connid] = nil
+end
+
+function is_conn_alive(connid)
+    if live_conns == nil then return false end
+    return live_conns[connid] ~= nil
+end
+
+-- 同账号在新连接登录时，旧连接进入待踢队列（主循环发通知后主动断开）
+function enqueue_kick(connid)
+    if pending_kicks == nil then pending_kicks = {} end
+    table.insert(pending_kicks, connid)
+end
+
+function drain_pending_kicks()
+    if pending_kicks == nil or #pending_kicks == 0 then return nil end
+    local result = pending_kicks
+    pending_kicks = {}
+    return result
+end
+
+-- 踢人两阶段：本帧发通知入队，下一帧由主循环真正断开
+function enqueue_pending_close(connid)
+    if pending_closes == nil then pending_closes = {} end
+    table.insert(pending_closes, connid)
+end
+
+function drain_pending_closes()
+    if pending_closes == nil or #pending_closes == 0 then return nil end
+    local result = pending_closes
+    pending_closes = {}
+    return result
+end
+
+-- 玩家全部细胞金币总和（供登录响应等外部调用）
+function player_total_gold(p)
+    if p == nil then return 0 end
+    return total_gold(p)
+end
+
+function initial_gold_value()
+    return initial_gold
+end
+
 -- 玩家进场
 function add_player(connid, account)
     local pid = account.id
     local spawn_x, spawn_y = get_random_spawn()
     local gold = account.gold or initial_gold
+
+    -- 会话冲突处理 1：同一账号已在另一连接在线 → 旧连接让位（主循环通知并断开），
+    -- 不在这里直接操作 ws（recv 回调上下文禁止发送/嵌套派发 close）
+    local prev_conn = pid_to_conn[pid]
+    if prev_conn ~= nil and prev_conn ~= connid then
+        table.insert(pending_kicks, prev_conn)
+        conn_to_pid[prev_conn] = nil
+    end
+
+    -- 会话冲突处理 2：同一连接此前在玩另一个账号 → 旧账号先落盘离场，
+    -- 否则其实体会成为无人控制、永不保存的幽灵
+    local prev_pid = conn_to_pid[connid]
+    if prev_pid ~= nil and prev_pid ~= pid then
+        local prev_p = players[prev_pid]
+        if prev_p ~= nil then
+            DB.update_gold(prev_p.name, prev_p.id, total_gold(prev_p))
+        end
+        players[prev_pid] = nil
+        pid_to_conn[prev_pid] = nil
+    end
+
+    -- 同账号已有实体（旧会话被顶或同连接重登）：覆盖前先把旧实体金币落盘，
+    -- 新会话继承最新累计值（DB.update_gold 同时维护 best_gold）
+    local existing_p = players[pid]
+    if existing_p ~= nil then
+        DB.update_gold(existing_p.name, existing_p.id, total_gold(existing_p))
+    end
 
     local p = {
         id = pid,
@@ -751,7 +905,11 @@ local function step_merge()
                             -- 先删大下标，避免小下标移位
                             table.remove(p.parts, j)
                             table.remove(p.parts, i)
-                            table.insert(p.parts, make_cell(mx, my, g, 0, 0, world_time))
+                            -- born 继承较早者：两个亲代都已过冷却，合体产物也应立刻
+                            -- 满足合体条件，否则 8 细胞连锁合回 1 要逐级再等 merge_cooldown_s
+                            local inherited_born = a.born
+                            if b.born < inherited_born then inherited_born = b.born end
+                            table.insert(p.parts, make_cell(mx, my, g, 0, 0, inherited_born))
                             found = true
                             merged_any = true
                         end
