@@ -129,6 +129,10 @@ jobs:
           echo "=== Running WebSocket Client E2E Test ==="
           node test_client.js
 
+          # Run auth/session robustness test (malformed packets, duplicate-session kick)
+          echo "=== Running Auth & Session E2E Test ==="
+          node test_auth.js
+
           # Run full combat and eating verification test (bot-free world)
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
@@ -181,6 +185,10 @@ jobs:
           echo "=== Running Bots & Rank E2E Test ==="
           node test_bots.js
 
+          # Run cross-restart persistence test (spawns its own server instance on 18080/18081)
+          echo "=== Running Persistence (restart login) E2E Test ==="
+          node test_persist.js
+
           # Kill server
           kill $SERVER_PID || true
 
@@ -194,6 +202,10 @@ jobs:
           if [ -f server_bots.log ]; then
             echo "=== Bots-phase Server Output ==="
             cat server_bots.log
+          fi
+          if [ -f persist_child.log ]; then
+            echo "=== Persistence Child Server Output ==="
+            cat persist_child.log
           fi
 
   test-macos:
@@ -291,6 +303,10 @@ jobs:
           echo "=== Running WebSocket Client E2E Test ==="
           node test_client.js
 
+          # Run auth/session robustness test (malformed packets, duplicate-session kick)
+          echo "=== Running Auth & Session E2E Test ==="
+          node test_auth.js
+
           # Run full combat and eating verification test (bot-free world)
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
@@ -343,6 +359,10 @@ jobs:
           echo "=== Running Bots & Rank E2E Test ==="
           node test_bots.js
 
+          # Run cross-restart persistence test (spawns its own server instance on 18080/18081)
+          echo "=== Running Persistence (restart login) E2E Test ==="
+          node test_persist.js
+
           # Kill server
           kill $SERVER_PID || true
 
@@ -356,4 +376,8 @@ jobs:
           if [ -f server_bots.log ]; then
             echo "=== Bots-phase Server Output ==="
             cat server_bots.log
+          fi
+          if [ -f persist_child.log ]; then
+            echo "=== Persistence Child Server Output ==="
+            cat persist_child.log
           fi

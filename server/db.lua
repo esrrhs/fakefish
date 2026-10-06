@@ -5,6 +5,13 @@ local is_db_connected = false
 local in_memory_accounts = nil
 local db_state = nil
 
+-- 异步鉴权流水线（登录/注册前的账号 SELECT）。
+-- fakelua 的 conn:query 无法给回调传递闭包上下文（内联函数会被转成空串），
+-- 因此用「单飞 + 队列」串行化：同一时刻只有一条在途查询，回调把结果写在 current 上，
+-- 主循环 Auth.tick 取走处理后再 pump 下一条。
+-- current/queue 都是 init() 中创建的运行时 table，C++ 回调只能写它们的字段。
+local auth_pipe = nil
+
 -- 历史排行缓存（服务端周期刷新，get_rank 直接读缓存应答）
 -- 注意：fakelua 的 conn:query 回调参数是【函数名字符串】（如 "DB.on_top_result"），
 -- 传内联闭包会被 CVarToString 转成空串、回调静默不触发。所有回调必须是包内全局函数。
@@ -16,7 +23,12 @@ function ensure_inited()
         in_memory_accounts = {}
     end
     if db_state == nil then
-        db_state = { next_id = 1000 }
+        -- 内存账号 id 段从 900000 起：与 MySQL 自增 id（[1, 800000)）、
+        -- 机器人 id（[800000, 900000)）区隔，避免同服会话内 id 碰撞
+        db_state = { next_id = 900000 }
+    end
+    if auth_pipe == nil then
+        auth_pipe = { current = nil, queue = {} }
     end
 end
 
@@ -71,17 +83,24 @@ function is_connected()
     return false
 end
 
--- 注册新用户
--- 返回: success(bool), reason_or_account(table or string)
-function register(username, password_hash, initial_gold)
+-- ---- 账号内存表原语 ----
+
+-- 读内存账号（本进程会话内已登录/已注册过）
+function memory_account(username)
+    ensure_inited()
+    return in_memory_accounts[username]
+end
+
+-- 登录 SELECT 命中后回填内存表，之后本会话直接走内存快路径
+function put_memory_account(acc)
+    ensure_inited()
+    in_memory_accounts[acc.username] = acc
+end
+
+-- 在内存表创建账号并返回（MySQL 模式下注册 SELECT 确认不重名后调用）
+function create_memory_account(username, password_hash, initial_gold)
     ensure_inited()
     if initial_gold == nil then initial_gold = 100 end
-
-    -- 先检查内存 fallback
-    if in_memory_accounts[username] ~= nil then
-        return false, "用户名已被注册"
-    end
-
     db_state.next_id = db_state.next_id + 1
     local account = {
         id = db_state.next_id,
@@ -93,32 +112,108 @@ function register(username, password_hash, initial_gold)
         deaths = 0
     }
     in_memory_accounts[username] = account
+    return account
+end
 
-    -- 异步写入 MySQL（不依赖回调查询结果；落盘一律按 username 定位，
-    -- 因为 MySQL 自增 id 与内存分配的 id 不保证一致）
-    if pool ~= nil then
-        local conn = pool:acquire()
-        if conn ~= nil then
-            local sql = "INSERT INTO accounts (username, password_hash, gold, best_gold) VALUES ('"
-                        .. username .. "', '" .. password_hash .. "', " .. tostring(initial_gold)
-                        .. ", " .. tostring(initial_gold) .. ")"
-            conn:query(sql, "DB.on_exec_result")
-            pool:release(conn)
+function has_pool()
+    return pool ~= nil
+end
+
+-- 鉴权查询等待可用连接的最长秒数：超时按数据库故障降级，避免登录请求永久挂起
+local auth_connect_timeout_s = 2
+
+-- 异步 INSERT 新账号（不依赖回调结果；落盘按 username 定位，
+-- MySQL 自增 id 与内存分配的 id 不保证一致，读取一律以 SELECT 为准）
+function async_insert_account(username, password_hash, initial_gold)
+    if pool == nil then return end
+    local conn = pool:acquire()
+    if conn == nil then return end
+    local sql = "INSERT INTO accounts (username, password_hash, gold, best_gold) VALUES ('"
+                .. username .. "', '" .. password_hash .. "', " .. tostring(initial_gold)
+                .. ", " .. tostring(initial_gold) .. ")"
+    conn:query(sql, "DB.on_exec_result")
+    pool:release(conn)
+end
+
+-- ---- 异步鉴权流水线（登录/注册共用） ----
+-- entry: { kind="login"|"register", connid, username, password_hash }
+-- 调用方（recv 回调）入队后立即尝试 pump；连接暂不可用时由主循环每帧重试。
+function enqueue_auth(entry)
+    ensure_inited()
+    entry.t0 = os.time()
+    table.insert(auth_pipe.queue, entry)
+    pump_auth()
+end
+
+-- 若当前无在途查询且队列非空，发起队首 SELECT
+function pump_auth()
+    if auth_pipe == nil then return end
+    if auth_pipe.current ~= nil then return end
+    if #auth_pipe.queue == 0 then return end
+    if pool == nil then return end
+
+    local conn = pool:acquire()
+    if conn == nil then
+        -- 连接持续拿不到（MySQL 中途宕机等）：超时后按查询故障收尾，
+        -- 由 Auth.tick 走内存降级，不让登录请求无限排队
+        local entry0 = auth_pipe.queue[1]
+        if entry0.t0 ~= nil and (os.time() - entry0.t0) >= auth_connect_timeout_s then
+            table.remove(auth_pipe.queue, 1)
+            entry0.done = true
+            entry0.db_err = "connect timeout"
+            auth_pipe.current = entry0
+        end
+        return
+    end
+
+    local entry = auth_pipe.queue[1]
+    table.remove(auth_pipe.queue, 1)
+    auth_pipe.current = entry
+
+    -- username 已由 Auth 限定为字母/数字/下划线，无注入风险
+    local sql = "SELECT id, password_hash, gold, best_gold, kills, deaths FROM accounts"
+                .. " WHERE username = '" .. entry.username .. "'"
+    conn:query(sql, "DB.on_auth_result")
+    pool:release(conn)
+end
+
+-- 主循环调用：当前查询已完成则取出（同时清空 current），否则返回 nil
+function take_done_auth()
+    if auth_pipe == nil then return nil end
+    local cur = auth_pipe.current
+    if cur == nil or not cur.done then return nil end
+    auth_pipe.current = nil
+    return cur
+end
+
+-- SELECT 结果回调（C++ 派发上下文）：只把结果行写进 current，校验/进场全部留给主循环
+function on_auth_result(c, err, result)
+    if auth_pipe == nil or auth_pipe.current == nil then return end
+    local cur = auth_pipe.current
+
+    if err ~= nil and #err > 0 then
+        cur.done = true
+        cur.db_err = err
+        return
+    end
+
+    if result ~= nil and result[1] == true and result[3] ~= nil then
+        local rows = result[3]
+        if #rows > 0 then
+            local row = rows[1]
+            cur.done = true
+            cur.row_id = tonumber(row[1])
+            cur.row_hash = tostring(row[2])
+            cur.row_gold = tonumber(row[3])
+            cur.row_best = tonumber(row[4])
+            cur.row_kills = tonumber(row[5])
+            cur.row_deaths = tonumber(row[6])
+            return
         end
     end
 
-    return true, account
-end
-
--- 根据用户名获取账号信息
-function get_account(username)
-    ensure_inited()
-    local mem_acc = in_memory_accounts[username]
-    if mem_acc ~= nil then
-        return true, mem_acc
-    end
-
-    return false, "用户不存在"
+    -- 无行：用户名不存在（注册继续，登录报账号不存在）
+    cur.done = true
 end
 
 -- 更新金币数据（同时维护历史最高金币 best_gold）
@@ -162,6 +257,11 @@ end
 
 -- 记死亡数
 function add_death(username)
+    local acc = in_memory_accounts[username]
+    if acc ~= nil then
+        acc.deaths = (acc.deaths or 0) + 1
+    end
+
     if pool ~= nil then
         local conn = pool:acquire()
         if conn ~= nil then
