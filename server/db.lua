@@ -145,6 +145,22 @@ function enqueue_auth(entry)
     pump_auth()
 end
 
+-- 同一连接已有在途（含正在执行）鉴权查询时返回 true。
+-- MySQL 变慢时单连接狂发登录包会把队列灌到无界；按 connid 去重后
+-- 队列长度天然不超过 maxconn（200）。命中后调用方应立即拒绝并提示稍后重试。
+function has_pending_auth(connid)
+    if auth_pipe == nil then return false end
+    if auth_pipe.current ~= nil and auth_pipe.current.connid == connid then
+        return true
+    end
+    for i = 1, #auth_pipe.queue do
+        if auth_pipe.queue[i].connid == connid then
+            return true
+        end
+    end
+    return false
+end
+
 -- 若当前无在途查询且队列非空，发起队首 SELECT
 function pump_auth()
     if auth_pipe == nil then return end

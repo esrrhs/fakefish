@@ -59,6 +59,7 @@ const J = (o) => JSON.stringify(o);
   ws.send(J({ type: 'login', username: user, password: 'abc123' }));
   m = await p;
   check('correct login -> login_ok', m.type === 'login_ok', J(m));
+  const myPid = m.player_id;
 
   // 6. malformed packets must not kill the connection; pong still works
   ws.send(J({ type: 'move', dx: 'abc', dy: 'def' }));
@@ -67,6 +68,26 @@ const J = (o) => JSON.stringify(o);
   ws.send(J({ type: 'login', username: 12345, password: 67890 }));
   ws.send(J({ type: 'register', username: ['a'], password: { x: 1 } }));
   ws.send('{bad json');
+  // NaN/Inf 无法经 JSON.stringify 发送（会被序列化成 null），直接发原始词法：
+  // 无论服务端 decode 失败拒收还是 finite 守卫丢弃，都不得让自身坐标变成 NaN/Inf
+  ws.send('{"type":"move","dx":NaN,"dy":1}');
+  ws.send('{"type":"move","dx":1e999,"dy":-1e999}');
+  ws.send('{"type":"move","dx":Infinity,"dy":-Infinity}');
+
+  let badCoord = false;
+  const coordWatcher = (buf) => {
+    let mm; try { mm = JSON.parse(buf); } catch (e) { return; }
+    if (mm.type === 'snapshot' && Array.isArray(mm.players)) {
+      for (const c of mm.players) {
+        if (c.id === myPid && (!Number.isFinite(c.x) || !Number.isFinite(c.y))) badCoord = true;
+      }
+    }
+  };
+  ws.on('message', coordWatcher);
+  await new Promise(r => setTimeout(r, 2000));
+  ws.removeListener('message', coordWatcher);
+  check('own coords stay finite after NaN/Inf move', !badCoord);
+
   let pongOk = false;
   ws.send(J({ type: 'ping' }));
   const pong = await waitFor(ws, m => m.type === 'pong', 5000).catch(() => null);
@@ -89,6 +110,18 @@ const J = (o) => JSON.stringify(o);
   check('old session notified+closed', oldResult !== 'nothing' && oldResult.indexOf('别处登录') >= 0, oldResult);
 
   ws2.close();
+
+  // 8. 只建连不登录的连接：即使持续发消息，也必须在建连 conn_timeout_s(15s) 后被踢
+  const wsIdle = await open();
+  const idleTimer = setInterval(() => { try { wsIdle.send(J({ type: 'ping' })); } catch (e) {} }, 2000);
+  const idleClosed = await new Promise((resolve) => {
+    wsIdle.on('close', () => resolve(true));
+    setTimeout(() => resolve(false), 20000);
+  });
+  clearInterval(idleTimer);
+  try { wsIdle.close(); } catch (e) {}
+  check('never-login connection closed after conn timeout', idleClosed === true);
+
   console.log(failures === 0 ? '=== AUTH PROBE ALL PASSED ===' : ('=== ' + failures + ' FAILURES ==='));
   process.exit(failures === 0 ? 0 : 1);
 })().catch(e => { console.error('PROBE ERROR', e); process.exit(1); });

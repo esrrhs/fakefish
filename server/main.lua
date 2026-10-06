@@ -50,6 +50,7 @@ function start(config_path)
     local dt = tick_ms / 1000.0
     local conn_timeout_s = game_cfg["conn_timeout_s"] or 15
     local feast_interval_s = game_cfg["feast_interval_s"] or 0
+    local save_interval_s = game_cfg["save_interval_s"] or 20
 
     print("[Main] Server loop started: " .. tostring(1000 / tick_ms) .. "Hz (tick=" .. tostring(tick_ms) .. "ms)")
     print("[Main] Access game at: http://127.0.0.1:" .. tostring(srv_cfg["http_port"] or 8080))
@@ -71,6 +72,7 @@ function start(config_path)
     -- 6. 主事件循环驱动
     local frame = 0
     local kick_acc = 0
+    local save_acc = 0
     while true do
         frame = frame + 1
 
@@ -105,6 +107,13 @@ function start(config_path)
         if kick_acc >= 1.0 then
             kick_acc = 0
             NetWs.kick_idle(conn_timeout_s)
+        end
+
+        -- 周期落盘在线玩家金币（按累计时间调度，0 或负值关闭）
+        save_acc = save_acc + dt
+        if save_interval_s > 0 and save_acc >= save_interval_s then
+            save_acc = 0
+            World.flush_online_gold()
         end
 
         -- 发送登录响应（通过 p.connid，与 broadcast 同路径，确保跨平台一致）

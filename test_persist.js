@@ -186,6 +186,29 @@ async function run() {
         log('PASS: re-registering persisted username rejected');
         ws4.close();
 
+        // 4e) 同一连接连发多条登录：第一条进异步 SELECT 流水线，其余必须被在途去重限流
+        // （服务端 recv 逐条同步派发，期间不穿插主循环，故除首条外必然命中在途检查）
+        const ws5 = await openWs(CHILD_WS);
+        const floodReasons = [];
+        ws5.on('message', (buf) => {
+            let mm;
+            try { mm = JSON.parse(buf.toString()); } catch (e) { return; }
+            if (mm.type === 'login_fail') floodReasons.push(mm.reason);
+        });
+        const FLOOD_N = 10;
+        const stamp = Date.now() % 100000;
+        for (let i = 0; i < FLOOD_N; i++) {
+            // 合法且不存在的用户名（<=20 字符，含下划线/字母数字，确保走到入队前的去重检查）
+            wsSend(ws5, { type: 'login', username: 'f' + stamp + '_' + i, password });
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+        ws5.close();
+        const throttled = floodReasons.filter((r) => r.indexOf('频繁') >= 0).length;
+        if (throttled < 1) {
+            throw new Error('expected in-flight auth throttling, got replies: ' + JSON.stringify(floodReasons));
+        }
+        log('PASS: duplicate in-flight auth on one connection throttled (' + throttled + '/' + FLOOD_N + ')');
+
         console.log('=== [Persist Test] ALL PASSED ===');
     } finally {
         try { child.kill('SIGTERM'); } catch (e) {}
