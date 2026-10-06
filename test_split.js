@@ -92,8 +92,12 @@ async function runSplitTest() {
 
     // 1. 吃豆攒金币到 110（初始 100，吃 2 颗即可）
     console.log("Eating pellets to reach gold 110...");
+    // 成功条件只看金币状态（与合体阶段同一策略）：每轮重选当前最近豆、短预算推进。
+    // 不用「固定坐标 + 8s 墙钟预算」——服务端按固定 dt 推进世界，GitHub 共享 runner
+    // 卡顿时墙钟位移明显偏小，且目标豆被吃会传送、feast 会清空奖励豆；追逐一个
+    // 可能已经消失的点极易误报。45s 总预算覆盖慢帧。
     const tGather = Date.now();
-    while (ownGold() < 110 && Date.now() - tGather < 60000) {
+    while (ownGold() < 110 && Date.now() - tGather < 45000) {
         const big = ownBig();
         if (!lastSnap || big === null) { await sleep100(); continue; }
         // 找最近的金币豆
@@ -103,10 +107,7 @@ async function runSplitTest() {
             if (d < nd) { nd = d; near = f; }
         }
         if (near === null) { await sleep100(); continue; }
-        if (!(await driveTo(near.x, near.y, 6, 8))) {
-            console.error("FAIL: could not reach a pellet");
-            process.exit(1);
-        }
+        await driveTo(near.x, near.y, 6, 2);
         await sleep100();
     }
     const gatheredGold = ownGold();
@@ -159,10 +160,9 @@ async function runSplitTest() {
             if (d < 200 && d < nd) { nd = d; near = f; }
         }
         if (near !== null) {
-            if (!(await driveTo(near.x, near.y, 6, 10))) {
-                console.error("FAIL: could not reach near-center pellet");
-                process.exit(1);
-            }
+            // 单次短预算赶路失败不致命：豆可能已被吃/清空，下轮重选；
+            // 最终仍由循环上方 90s 预算 + 分裂几何断言兜底
+            await driveTo(near.x, near.y, 6, 10);
             await driveTo(1000, 1000, 30, 20);
         } else {
             await new Promise(r => setTimeout(r, 500));

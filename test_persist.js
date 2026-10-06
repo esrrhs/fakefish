@@ -102,7 +102,10 @@ async function run() {
         return;
     }
 
-    const username = 'Persist_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+    // 用户名必须 ≤20 字符（服务端 [A-Za-z0-9_]{2,20} 校验）：
+    // p + 时间戳末 8 位 + 4 位随机 = 13 字符，避免拼全称导致确定性 register_fail
+    const username = 'p' + String(Date.now()).slice(-8)
+        + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
     const password = 'abc123';
 
     // 1) 在父服务器注册，等待异步 INSERT 落盘
