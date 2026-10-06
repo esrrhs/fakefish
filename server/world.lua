@@ -190,6 +190,11 @@ function init(cfg)
         next_in = zone_shrink_interval_s
     }
 
+    -- 播种随机数：fakelua 的 math.random 走 std::rand()，进程启动默认 srand(1)，
+    -- 不播种则每次重启豆子/道具/出生点都是同一确定序列，可被玩家记住布局蹲点。
+    -- 只在 init 播种一次：热更走 hotfix_restore，中途重播种会打断运行中的序列。
+    math.randomseed(os.time())
+
     spawn_foods()
     spawn_powerups()
     print("[World] Initialized with map " .. tostring(map_width) .. "x" .. tostring(map_height)
@@ -1038,6 +1043,11 @@ end
 -- 撒落一簇奖励金币豆（必须在主循环调用：回调上下文创建的 table 不能跨帧存活）；
 -- 返回事件信息供主循环广播
 function spawn_feast()
+    -- 新一场开始即清空上一场的残豆：奖励豆只在被吃掉时移除，吃剩的会永久残留。
+    -- 不清的话 bonus_food 只增不减（默认每 120s +30），快照按 20Hz 全量广播、
+    -- Bot 每次决策也全量遍历，长跑下带宽与 CPU 单调膨胀。
+    bonus_food = {}
+
     local cx = math.random(300, map_width - 300)
     local cy = math.random(300, map_height - 300)
     for i = 1, feast_bonus do
