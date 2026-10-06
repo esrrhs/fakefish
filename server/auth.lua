@@ -62,6 +62,12 @@ function begin_register(connid, username, password)
         return
     end
 
+    -- 同一连接上一条鉴权查询尚未返回：直接拒绝，避免慢库下队列被单连接灌爆
+    if DB.has_pending_auth(connid) then
+        World.enqueue_response(connid, { type = "register_fail", reason = "操作过于频繁，请稍候再试" })
+        return
+    end
+
     DB.enqueue_auth({
         kind = "register",
         connid = connid,
@@ -106,6 +112,12 @@ function begin_login(connid, username, password)
     -- 登录同样要求用户名合法（防注入 + 避免无意义查询），对外统一报「账号不存在」
     if not is_valid_username(username) then
         World.enqueue_response(connid, { type = "login_fail", reason = "账号不存在，请先注册" })
+        return
+    end
+
+    -- 同一连接上一条鉴权查询尚未返回：直接拒绝，避免慢库下队列被单连接灌爆
+    if DB.has_pending_auth(connid) then
+        World.enqueue_response(connid, { type = "login_fail", reason = "操作过于频繁，请稍候再试" })
         return
     end
 

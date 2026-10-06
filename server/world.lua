@@ -19,8 +19,9 @@ local players = nil
 local conn_to_pid = nil
 local pid_to_conn = nil
 
--- 当前仍连着的 connid 集合（含只建连未登录的连接）：
--- 异步登录查询往返期间连接可能已断开，主循环处理结果前据此判定是否还有效。
+-- 当前仍连着的连接（含只建连未登录的连接）：connid -> 建连时间戳。
+-- 异步登录查询往返期间连接可能已断开，主循环处理结果前据此判定是否还有效；
+-- 建连时间也用于踢除迟迟不登录的挂起连接。
 local live_conns = nil
 -- 同账号在别处登录时，被顶替的旧 connid 队列；主循环通知后主动断开
 local pending_kicks = nil
@@ -365,9 +366,10 @@ local function total_gold(p)
 end
 
 -- 连接建立/断开登记（WS conn/close 事件调用）
+-- 值为建连时间（秒）：既用于异步鉴权往返的存活判定，也用于清理只建连不登录的连接
 function mark_conn(connid)
     if live_conns == nil then live_conns = {} end
-    live_conns[connid] = true
+    live_conns[connid] = os.time()
 end
 
 function unmark_conn(connid)
@@ -378,6 +380,20 @@ end
 function is_conn_alive(connid)
     if live_conns == nil then return false end
     return live_conns[connid] ~= nil
+end
+
+-- 收集「已建连超过 timeout_s 仍未登录进场」的连接（无 pid 映射）。
+-- 这类连接不在 players 表中，kick_idle 遍历玩家覆盖不到，可永久占住 maxconn 名额；
+-- 判定只看建连时间、不因收发消息续期（正常客户端建连后应立刻完成登录）。
+function get_idle_unauth_conns(timeout_s, now)
+    local out = {}
+    if live_conns == nil then return out end
+    for connid, ts in pairs(live_conns) do
+        if conn_to_pid[connid] == nil and (now - ts) > timeout_s then
+            table.insert(out, connid)
+        end
+    end
+    return out
 end
 
 -- 同账号在新连接登录时，旧连接进入待踢队列（主循环发通知后主动断开）
@@ -519,6 +535,17 @@ function remove_player_by_conn(connid)
     pid_to_conn[pid] = nil
 
     return p
+end
+
+-- 周期性落盘全部在线玩家金币（主循环按 save_interval_s 调度）。
+-- 吞噬/离场之外的吃豆进度只存在内存里，进程异常退出（SIGTERM/崩溃/-9）会丢失，
+-- 用定时批量落盘把损失窗口压到一个周期；机器人不落盘。
+function flush_online_gold()
+    for pid, p in pairs(players) do
+        if not p.is_bot then
+            DB.update_gold(p.name, p.id, total_gold(p))
+        end
+    end
 end
 
 -- 设置移动方向（附带归一化防作弊）

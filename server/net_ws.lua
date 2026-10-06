@@ -55,8 +55,13 @@ function handle_message(connid, msg)
     elseif mtype == "move" then
         local dx = msg["dx"]
         local dy = msg["dy"]
-        -- 非数值方向直接丢弃，防止字符串进入 set_player_move 做算术抛错
-        if type_of(dx) == "number" and type_of(dy) == "number" then
+        -- 非数值类型直接丢弃，防止字符串进入 set_player_move 做算术；
+        -- NaN/Inf 也要拦：NaN 能通过归一化（NaN 比较恒假）并让坐标变 NaN，
+        -- 骗过所有边界钳制后经快照广播污染全体客户端。fakelua 无 math.huge，
+        -- 用「x==x 排除 NaN，x*0==0 排除 ±Inf（Inf*0 与 NaN*0 都是 NaN）」判定有限数。
+        if type_of(dx) == "number" and type_of(dy) == "number"
+           and dx == dx and dy == dy
+           and dx * 0 == 0 and dy * 0 == 0 then
             World.set_player_move(connid, dx, dy)
         end
 
@@ -276,8 +281,10 @@ function notify_eat(eater_id, victim_id, gold, full, partial)
     broadcast(m)
 end
 
--- 踢掉超过 timeout_s 秒没有任何消息的空闲连接（主循环周期调用）
--- close_connection 会同步触发 close 事件 → 走 remove_player_by_conn 正常清场
+-- 踢掉超时连接（主循环周期调用）：
+--  1. 已登录玩家：超过 timeout_s 秒没有任何消息；
+--  2. 只建连未登录：建连超过 timeout_s 仍未进场（防止挂连接占满 maxconn）。
+-- close_connection 会同步触发 close 事件 → 走 unmark/remove_player_by_conn 正常清场
 function kick_idle(timeout_s)
     if ws_server_obj == nil then return end
     if timeout_s == nil or timeout_s <= 0 then return end
@@ -289,6 +296,13 @@ function kick_idle(timeout_s)
                   .. " player=" .. tostring(p.name) .. " (idle " .. tostring(now - p.last_seen) .. "s)")
             ws_server_obj:close_connection(p.connid)
         end
+    end
+
+    local unauth = World.get_idle_unauth_conns(timeout_s, now)
+    for i = 1, #unauth do
+        print("[NetWs] Kicking unauthenticated connection connid=" .. tostring(unauth[i])
+              .. " (no login within " .. tostring(timeout_s) .. "s)")
+        ws_server_obj:close_connection(unauth[i])
     end
 end
 
