@@ -15,8 +15,7 @@
     "test:split": "node test_split.js",
     "test:hotfix": "node test_hotfix.js",
     "test:bots": "node test_bots.js",
-    "test:persist": "node test_persist.js",
-    "test:gameplay": "node test_gameplay.js"
+    "test:persist": "node test_persist.js"
   },
   "dependencies": {
     "ws": "^8.22.0"

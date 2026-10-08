@@ -21,7 +21,7 @@
 | 目标 | 非目标（本期不做） |
 |------|-------------------|
 | 用可玩 demo 验证 FakeLua 端到端能力 | 商业化运营、完整内容生态 |
-| 可登录/注册的轻量 PVP 沙盒 | 排行榜、公会、商城、皮肤 |
+| 可登录/注册的轻量 PVP 沙盒 | 运营级赛季排行、公会、商城、皮肤 |
 | 权威服务端：移动、碰撞、吃球、金币结算 | 客户端预测、插值物理权威 |
 | MySQL 持久化账号与金币 | 多进程/多线程分片、跨服 |
 | 单 HTML/JS 页面可玩 | 复杂 UI 框架、移动端 App |
@@ -55,14 +55,14 @@
 | 数值 | 每个角色只有一个数值：**金币 `gold`** |
 | 体型 | `radius = f(gold)`，例如 `radius = base_r + k * sqrt(gold)`（具体公式进配置） |
 | 移动 | 玩家发送方向/目标；服务器按速度积分更新位置，限制在地图边界内 |
-| 碰撞 | 两球圆心距 ≤ 半径差（或半径和的阈值）且大球金币严格更大 → 大吃小 |
-| 吃球结算 | 大球 `gold += 小球.gold`；小球重置为 `initial_gold`，随机空位复活 |
-| 平局 | 金币相等或体型接近时不互相吞噬（避免同体互杀抖动） |
-| 下线 | 断开 WS 后角色离场；金币写回 MySQL |
+| 碰撞 | 大球半径需 ≥ 小球半径 × `eat_ratio`（默认 1.05）且金币严格更大、圆心距小于大球半径 → 大吃小 |
+| 吃球结算 | 大球 `gold += 小球.gold`；小球重置为 `initial_gold`，在安全区内随机空位复活 |
+| 平局 | 默认 `eat_tie_equal: true`：双方金币相等（如都被毒圈扣到 0、半径同为下限）时按 player_id 较小者吞掉对方，避免互相卡死；置 `false` 则严格「必须金币更大」 |
+| 下线 | 断开 WS 后角色离场；金币写回 MySQL。在线期间另有 `save_interval_s` 周期落盘兜底 |
 
 ### 5. 账号与数据
 
-**表 `accounts`（草案）：**
+**表 `accounts`（见 `sql/schema.sql`）：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -74,9 +74,9 @@
 | `kills` / `deaths` | INT | 累计吞噬数 / 被吞数 |
 | `created_at` / `updated_at` | DATETIME | 时间戳 |
 
-- **注册**：用户名不存在则插入（仅允许字母/数字/下划线），初始 `gold = initial_gold`。
-- **登录**：校验密码 → 建立会话 → 加载金币 → 在场景中生成球。
-- **持久化**：吃球后可节流写库；断线/正常登出时强制写回。
+- **注册**：先 `SELECT` 查重，用户名不存在才插入（仅允许 2–20 位字母/数字/下划线），初始 `gold = initial_gold`。
+- **登录**：发 `SELECT` 校验密码 → 回填内存账号表 → 建立会话 → 加载金币 → 在场景中生成球；同账号在别处登录会踢掉旧会话。
+- **持久化**：吞噬结算、每 `save_interval_s`（默认 20s）周期、断线/离场时写回；MySQL 不可达时全程降级内存模式。
 
 ### 6. 网络协议（WebSocket + JSON）
 
@@ -88,7 +88,7 @@
 |------|------|------|
 | `register` | `username`, `password` | 注册 |
 | `login` | `username`, `password` | 登录并进场 |
-| `move` | `dx`, `dy` 或 `dir` | 移动意图（归一化方向） |
+| `move` | `dx`, `dy`（number，长度 >1 自动归一化；NaN/Inf 拒收） | 移动意图方向 |
 | `split` | 无 | 分裂：每个达条件的细胞分出一半，新细胞沿当前方向弹出 |
 | `chat` | `content` | 发送世界聊天（服务器裁剪、限长并按玩家节流） |
 | `get_chat` | 无 | 请求最近聊天历史 |
@@ -106,16 +106,16 @@
 | `login_fail` / `register_fail` | `reason` | 失败原因 |
 | `snapshot` | `players[]`, `foods[]`, `powerups[]`, `zone` | 全量场景状态（zone 为当前安全区信息） |
 | `powerup` | `player_id`, `name`, `kind` | 道具拾取事件（kind: speed/shield/magnet） |
-| `feast` | `x`, `y`, `count` | 金币雨事件：地图 (x,y) 附近散落 count 枚奖励金币豆（吃掉即消失） |
+| `feast` | `x`, `y`, `count` | 金币雨事件：地图 (x,y) 附近散落 count 枚奖励金币豆；吃掉即消失，下一场开始时残豆清空（不会无限累积） |
 | `zone` | `x`, `y`, `r`, `phase`, `holding`, `next_in`, `reset?` | 安全区变化：收缩到新半径或重置（reset=true） |
-| `player_join` / `player_leave` | `player_id`, … | 进出场 |
 | `eat` | `eater_id`, `victim_id`, `eater_name`, `victim_name`, `gold` | 吃球事件（可驱动特效与击杀播报） |
 | `you_died` | `gold`, `x`, `y` | 自己被吃后复活信息 |
 | `rank` | `list[]` | 历史最佳排行（按 `best_gold` 降序，来自 MySQL） |
 | `hotfix_result` | `results[]`，或顶层 `ok=false, err` | 热更结果：每项 `{module, ok, err?}`；鉴权失败时为顶层错误 |
 | `chat` | `name`, `content` | 世界聊天：某玩家发来一条消息 |
 | `chat_history` | `list[]` | 进场时下发的最近聊天历史 |
-| `error` | `reason` | 通用错误 |
+| `error` | `reason` | 错误通知（如同账号在别处登录，旧连接被踢前下发） |
+| `pong` | 无 | 对 `ping` 的心跳应答 |
 
 `players[]` 元素示例：`{ id, cell, name, x, y, gold, r, bot?, fx? }`（cell 为细胞序号，每名玩家可有多条）。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人，`fx: speed/shield/magnet` 表示道具特效生效中。
 
@@ -138,29 +138,57 @@
 
 ### 8. 配置（示例）
 
+完整配置以 [`config.example.yaml`](config.example.yaml) 为准，关键项：
+
 ```yaml
 server:
-  http_port: 8080          # 静态前端
-  ws_port: 8081            # 游戏 WebSocket
-  tick_ms: 50              # 逻辑帧间隔约 20Hz
-  hotfix_token: ""         # 热更鉴权 token，留空则拒绝一切 hotfix 请求
-  hotfix_watch: false      # true 时每秒检测可热更脚本变更并自动热更
+  http_port: 8080
+  ws_port: 8081
+  tick_ms: 50              # 逻辑帧间隔（20Hz）
+  hotfix_token: ""         # 留空则拒绝一切热更请求
+  hotfix_watch: false      # true 时自动检测脚本变更并热更
 
-mysql:
-  host: 127.0.0.1
+mysql:                     # 连不上时自动降级内存模式
+  host: "127.0.0.1"
   port: 3306
-  user: fakefish
-  password: "changeme"
-  db: fakefish
+  user: "root"
+  password: ""
+  db: "fakefish"
 
 game:
   map_width: 2000
   map_height: 2000
   initial_gold: 100
-  move_speed: 120          # 单位/秒
-  radius_base: 12
+  move_speed: 160
+  radius_base: 15
   radius_k: 2.5            # r = base + k * sqrt(gold)
   eat_ratio: 1.05          # 大球半径需 >= 小球 * ratio 才可吃
+  eat_tie_equal: true      # 同金币时按 player_id 裁决，避免双 0 卡死
+  bot_count: 3             # AI 机器人数量，0 关闭
+  bot_max_gold: 2000
+  conn_timeout_s: 15       # 无消息（及建连不登录）超时踢除
+  save_interval_s: 20      # 在线玩家金币周期落盘秒数，0 关闭
+  powerup_count: 5
+  fx_speed_s: 6            # 加速 x1.5
+  fx_shield_s: 5           # 护盾免吞
+  fx_magnet_s: 8           # 磁铁拾取半径 x4
+  feast_interval_s: 120    # 金币雨间隔，0 关闭
+  zone_enable: true        # 动态安全区
+  zone_initial_radius: 1500
+  zone_min_radius: 250
+  zone_shrink_ratio: 0.7
+  zone_shrink_interval_s: 60
+  zone_hold_s: 30
+  zone_dps: 20             # 圈外每秒流失金币
+  split_max_cells: 8       # 分裂球
+  split_min_gold: 100
+  split_impulse: 480
+  split_friction: 3.2
+  merge_cooldown_s: 12
+  chat_enable: true        # 世界聊天
+  chat_max_len: 80
+  chat_history: 20
+  chat_cooldown_s: 2
 ```
 
 启动：`./fakefish --config=config.yaml`（或由 `flua` 加载入口脚本）。
@@ -258,21 +286,24 @@ fakefish/
     world.lua             # 实体状态、移动积分、边界与金币豆刷新
     bot.lua               # AI 机器人（觅食/追击/逃跑/游荡）
     combat.lua            # 质量/半径公式与大鱼吃小鱼碰撞判定
+    hotreload.lua         # 运行中脚本热更编排（快照/重编译/状态迁移）
     net_ws.lua            # WebSocket 路由、事件分发与 20Hz 场景快照广播
     http_static.lua       # HTTP 静态前端托管 + JSON API（rank/stats）
   web/                    # 纯原生 HTML5/Canvas 静态前端
     index.html            # 登录界面与全屏 Canvas 画布、HUD
     game.js               # WebSocket 客户端、相机跟随、平滑渲染
     style.css             # 暗色赛博霓虹风格 UI
-  test_client.js          # 端到端 WebSocket 自动化测试
-  test_auth.js            # 鉴权/会话健壮性（畸形包、同账号互踢）
-  test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证测试
-  test_persist.js         # 跨重启登录持久化（自带隔离端口第二实例，无 MySQL 自动 SKIP）
-  test_bots.js            # AI 机器人与历史排行验证测试
-  test_powerup.js         # 道具拾取与特效验证测试
-  test_feast.js           # 金币雨世界事件验证测试
-  test_zone.js            # 动态安全区收缩与圈外伤害验证测试
-  test_split.js           # 分裂/合体机制验证测试
+  test_client.js          # 端到端 WebSocket 连通与同步
+  test_auth.js            # 鉴权/会话健壮性（畸形包、NaN/Inf、同账号互踢、挂连清理）
+  test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证
+  test_api.js             # HTTP JSON API 与目录穿越防护
+  test_powerup.js         # 道具拾取与特效验证
+  test_feast.js           # 金币雨世界事件（含残豆清理）验证
+  test_zone.js            # 动态安全区收缩与圈外伤害验证
+  test_split.js           # 分裂/合体机制验证
+  test_hotfix.js          # 运行中热更（含机器人场景）验证
+  test_bots.js            # AI 机器人与历史排行验证
+  test_persist.js         # 跨重启登录持久化（隔离端口第二实例，无 MySQL 自动 SKIP）
   CMakeLists.txt          # 工程构建配置（Modern CMake find_package）
 ```
 
@@ -388,6 +419,16 @@ fakefish/
 - [x] 踢人周期改按累计时间判定，不再硬编码 20Hz
 - [x] 新增 `test_auth.js`（畸形包/踢人）与 `test_persist.js`（拉起隔离端口的第二实例验证跨重启登录，无 MySQL 自动 SKIP）并纳入 CI；`npm test` 与 CI 清单对齐
 
+### Phase 14 — 长跑稳定性与边界加固
+
+- [x] **金币雨残豆清理**：每场开始先清空上一场未吃完的奖励豆（此前只增不减，20Hz 全量快照与 Bot 扫描随运行时长单调膨胀），feast 后食物数封顶在基础 80 + 当届 30
+- [x] **随机数播种**：启动 `math.randomseed(os.time())`（fakelua `math.random` 底层 `std::rand()` 默认种子恒为 1，不播种则每次重启豆子/道具/出生点布局完全相同）
+- [x] **在线金币周期落盘**：每 `save_interval_s`（默认 20s，可配 0 关闭）把在线玩家金币批量写库，把异常退出（SIGTERM/崩溃/-9）的进度损失窗口压到一个周期，不再只靠吞噬/离场落盘
+- [x] **只建连不登录的连接清理**：连接表记录建连时间，建连超过 `conn_timeout_s` 仍未进场即断开（发消息不续期），防止挂起 TCP 永久占满 maxconn
+- [x] **异步鉴权队列上界**：同一连接已有在途登录/注册 SELECT 时拒绝新请求并提示稍后重试，慢 MySQL 下单连接无法把队列灌到无界，队列长度被钉在 maxconn 以内
+- [x] **move 方向 NaN/Inf 守卫**：`type==number` 之外再做有限性判定（fakelua 无 `math.huge`，用 `x==x and x*0==0` 同时排除 NaN 与 ±Inf），杜绝 NaN 坐标绕过边界钳制并污染全体快照
+- [x] **测试加固与卫生**：修复 `test_persist.js` 用户名超 20 字符上限的确定性失败；`test_split.js` 吃豆阶段改为按金币状态判定、短预算重选最近豆，容忍共享 CI runner 的帧速抖动；移除与 `test_combat.js` 重叠且无硬断言的 `test_gameplay.js`
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -403,6 +444,7 @@ fakefish/
 11. **M11**：世界聊天收发、发言节流与限长、进场历史同步、聊天面板与快捷表情：**已通过**
 12. **M12**：运行中热更脚本逻辑、不重启不断连、世界状态与机器人完整保留：**已通过**
 13. **M13**：MySQL 重启后老账号可登录、战绩不丢；重复注册被拒；同账号互踢与畸形包防护生效：**已通过**（MySQL 用例以 CI 为准，本地无 MySQL 时 `test_persist.js` 自动 SKIP）
+14. **M14**：长跑无残豆/布局可复现性问题；异常退出金币损失 ≤ 一个落盘周期；挂起连接与在途鉴权刷量被限流；NaN/Inf 移动包不污染世界：**已通过**（双平台 CI）
 
 ---
 
@@ -461,12 +503,15 @@ http://127.0.0.1:8080
 
 ### 6. 运行自动化测试
 
+测试为端到端用例，需先启动服务器（见上一步）；`test_hotfix.js` 还要求 `config.yaml` 里配置 `hotfix_token: "test123"`。
+
 ```bash
 npm install ws
-node test_combat.js
-node test_hotfix.js    # 需 config.yaml 配置 hotfix_token: "test123"
-node test_bots.js
+npm test               # 跑全部用例（与 CI 清单一致；无 MySQL 时 test_persist 自动 SKIP）
+npm run test:auth      # 也可单独运行某个套件
 ```
+
+> 注意：除 `test_bots.js` / `test_persist.js` 外的用例按无机器人世界（`bot_count: 0`）设计，CI 会在该阶段后重启为 `bot_count: 3` 再跑机器人与持久化用例。
 
 ---
 
