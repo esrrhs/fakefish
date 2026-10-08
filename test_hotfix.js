@@ -44,7 +44,11 @@ function hotfix(modules, token) {
     });
 }
 
-// 驱动玩家吃最近的一个金币豆，直到 gold 达到目标
+// 驱动玩家吃最近的一个金币豆，直到 gold 达到目标。
+// 成功判据是金币状态而非墙钟位移：世界按固定 dt 推进，共享 CI runner 帧速骤降时
+// 15s 墙钟内的世界位移可能不够够到最近豆（热更后测试半径 +100，移速还会被大球
+// 减速系数压到 ~109px/s）。每 100ms 重选最近豆 + 45s 总预算容忍慢帧，与
+// test_split 的 gather 阶段同策略。
 async function collectFood(getSelf, getFoods, targetGold, timeoutMs) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -132,7 +136,7 @@ async function run() {
     check(res.results && res.results[0].ok === true, 'combat hotfix should succeed: ' + JSON.stringify(res));
     console.log('[3/4] Combat hotfix applied, collecting one food...');
 
-    const ok = await collectFood(() => self, () => foods, self.gold + 1, 15000);
+    const ok = await collectFood(() => self, () => foods, self.gold + 1, 45000);
     check(ok, 'failed to collect food within timeout');
     check(Math.abs(self.r - expectedRadius(self.gold, 100)) < 1,
           `new formula mismatch for gold ${self.gold}: got r=${self.r}, expected ${expectedRadius(self.gold, 100)}`);
