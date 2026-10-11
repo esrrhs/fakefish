@@ -118,13 +118,18 @@ async function run() {
         // redis 段上方注释里的文字（“# …或 enabled:false 时静默降级”），
         // 裸 /enabled:\s*false/ 会只改掉注释、真实开关仍为 false。
         .replace(/(^redis:\s*\n\s*enabled:\s*)false/m, '$1true')
+        // CI 准备脚本会把配置里的 MySQL 密码 sed 成 "changeme"（全局替换会连带
+        // 改掉 redis 段），而 CI 的 redis service 无密码。本测试的前置探测不带
+        // AUTH，故锚定 redis 段强制清空密码，避免 "AUTH called without password"。
+        .replace(/(^redis:\s*\n(?:[ \t]+\S[^\n]*\n)*?[ \t]+password:[ \t]*)"[^"\n]*"/m, '$1""')
         .replace(/port:\s*8092/, 'port: ' + METRICS_PORT)
         .replace(/path:\s*"data\/events\.db"/, 'path: "data/events.redis-test.db"')
         // 子实例不需要金币雨，拉长间隔避免日志噪音
         .replace(/feast_interval_s:\s*\d+/, 'feast_interval_s: 0');
 
     if (!/http_port:\s*18300/.test(cfgChild) || !/ws_port:\s*18301/.test(cfgChild)
-        || !/^redis:\s*\n\s*enabled:\s*true/m.test(cfgChild)) {
+        || !/^redis:\s*\n\s*enabled:\s*true/m.test(cfgChild)
+        || !/^redis:\s*\n(?:[ \t]+\S[^\n]*\n)*?[ \t]+password:[ \t]*""/m.test(cfgChild)) {
         throw new Error('failed to rewrite child config for redis test');
     }
     fs.writeFileSync(CHILD_CONFIG, cfgChild);

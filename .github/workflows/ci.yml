@@ -116,9 +116,11 @@ jobs:
       - name: Prepare runtime configuration
         run: |
           cp config.example.yaml config.yaml
-          # Update config.yaml with CI MySQL credentials
-          sed -i 's/user: "root"/user: "fakefish"/' config.yaml
-          sed -i 's/password: ""/password: "changeme"/' config.yaml
+          # Update config.yaml with CI MySQL credentials.
+          # 只替换第一处（mysql 段）：redis 段同样有 password: ""，全局替换会让
+          # 无密码的 CI redis service 收到 AUTH 而拒绝连接（GNU sed 0,addr 语法）。
+          sed -i '0,/user: "root"/s//user: "fakefish"/' config.yaml
+          sed -i '0,/password: ""/s//password: "changeme"/' config.yaml
           # Disable bots for the deterministic client/combat phase (re-enabled before test_bots.js)
           sed -i.bak 's/bot_count: 3/bot_count: 0/' config.yaml && rm -f config.yaml.bak
           # Configure hotfix token used by test_hotfix.js
