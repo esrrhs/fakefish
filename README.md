@@ -102,7 +102,7 @@
 
 | type | 字段 | 说明 |
 |------|------|------|
-| `login_ok` | `player_id`, `gold`, `map` | 登录成功 |
+| `login_ok` | `player_id`, `gold`, `map`, `motd?` | 登录成功；`motd` 为当前登录公告（无公告时不带该字段） |
 | `login_fail` / `register_fail` | `reason` | 失败原因 |
 | `snapshot` | `players[]`, `foods[]`, `powerups[]`, `zone` | 全量场景状态（zone 为当前安全区信息） |
 | `powerup` | `player_id`, `name`, `kind` | 道具拾取事件（kind: speed/shield/magnet） |
@@ -132,7 +132,10 @@
 | `combat` | 碰撞检测与吃球结算 |
 | `hotreload` | 热更编排：统一快照 → 调宿主 `host.compile_file` 重编译 → 状态迁移恢复 |
 | `net_ws` | WS 收发包、JSON 编解码、广播 |
-| `http_static` | 托管前端静态页 + HTTP JSON API（排行/统计） |
+| `http_static` | 托管前端静态页 + HTTP JSON API（排行/统计/feed/pbf/motd/admin），gzip 协商压缩 |
+| `feed` | `container.deque` 有界内存事件流（进场/击杀/金币雨），订阅事件总线，热更不丢 |
+| `motd` | 登录公告：`io.open` 读写 `data/motd.txt`（写 `.tmp` + `os.rename` 原子替换），UTF-8 按字符限长 |
+| `admin` | 管理接口：`hotfix_token` 鉴权 + `process.run` 执行配置白名单命令（无 shell、不可附参数） |
 
 跨帧状态使用 FakeLua **container** / NativeObject（arena reset 后 Lua table 不可长期持有）。
 
@@ -190,13 +193,27 @@ game:
   chat_history: 20
   chat_cooldown_s: 2
 
+feed:                      # 内存事件流（container.deque）
+  enabled: true
+  capacity: 50             # 保留最近 N 条，钳制 1-200
+
+motd:                      # 登录公告（io 原子写文件）
+  enabled: true
+  path: data/motd.txt
+  max_len: 200             # UTF-8 字符数，钳制 1-1000
+
+admin:                     # 管理接口（复用 server.hotfix_token 鉴权）
+  enabled: true
+  run_timeout_ms: 3000     # 单命令超时，上限 10000
+  commands:                # 进程白名单：客户端只能选名字，不能附加参数
+    ping: ["echo", "fakefish-pong"]
 ```
 
 启动：`./fakefish --config=config.yaml`（或由 `flua` 加载入口脚本）。
 
-### 8.5 HTTP JSON API
+### 8.5 HTTP API（JSON / protobuf / gzip）
 
-静态页之外，同一 HTTP 端口提供只读 JSON 接口（带 CORS，便于外部工具/看板接入）：
+静态页之外，同一 HTTP 端口提供只读接口（带 CORS，便于外部工具/看板接入）：
 
 | 路由 | 说明 |
 |------|------|
@@ -204,13 +221,28 @@ game:
 | `GET /api/rank.csv` | 同数据的 CSV 导出（`csv.encode` 自动转义） |
 | `GET /api/stats` | 服务器统计：在线人数、机器人数、运行时长、地图尺寸 |
 | `GET /api/events?type=&limit=` | SQLite 事件流水（type 白名单 enter/kill/feast，limit 1-100，detail 为内嵌 JSON） |
+| `GET /api/feed?limit=N` | 内存事件流（deque 最近 N 条：enter/kill/feast，limit 钳 1-100，默认 20） |
+| `GET /api/world.pbf` | protobuf3 二进制世界快照（`WorldSnapshot{repeated PlayerCell,...}`，Content-Type: application/x-protobuf） |
+| `GET /api/motd` | 当前登录公告（无公告时 `motd: null`） |
+| `GET /api/codec/selftest` | `serialize` 二进制 + `text_encode` 文本往返自检，返回 `bin_equal/text_equal` |
+| `POST /api/admin/run` | 执行配置白名单命令，body `{token, cmd}`，返回 `{stdout, stderr, exit}` |
+| `POST /api/admin/motd` | 更新/清空公告，body `{token, motd}`（motd 为 null 清除并删文件） |
 
 示例：
 
 ```bash
 curl http://127.0.0.1:8080/api/rank?limit=5
 curl http://127.0.0.1:8080/api/stats
+curl http://127.0.0.1:8080/api/feed?limit=20
+curl --compressed http://127.0.0.1:8080/api/world.pbf -o world.bin
+curl -X POST http://127.0.0.1:8080/api/admin/run \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"your_token","cmd":"ping"}'
 ```
+
+**gzip 协商压缩**：所有 `200` 响应在 body ≥ 128 字节、非 `image/*` 且请求头 `Accept-Encoding` 含 `gzip`（q 值非 0）时，自动以 `compress.gzip_compress` 压缩并返回 `Content-Encoding: gzip`、`Vary: Accept-Encoding`；压缩失败 pcall 兜底回退原文。
+
+**管理接口约束**：必须 POST 且 `token` 匹配 `server.hotfix_token`（未配置 token 时一律 403）；`cmd` 只能是 `admin.commands` 里登记的名字，argv 完全来自配置（无 shell 拼接、不可附加参数），超时返回错误。MOTD 按 UTF-8 字符限长，拒绝 CR 与控制字符，原子落盘。
 
 未知 `/api/*` 路由返回 404 JSON；`../` 目录穿越一律 403。
 
@@ -221,10 +253,10 @@ curl http://127.0.0.1:8080/api/stats
 **机制**
 
 - FakeLua 的跨包调用在运行时按函数名查找（`FakeluaCallByName`）；对同一 `State` 重新 `CompileFile` 会 Merge 替换同名函数地址，此后新调用即命中新版本。
-- 可热更模块：`combat`（纯函数无状态）、`world`、`bot`（有状态）。`config/db/net_ws/http_static/main/hotreload` 持有原生资源句柄或正处于调用栈中，不允许热更。
+- 可热更模块：`combat`（纯函数无状态）、`world`、`bot`、`feed`（有状态）。`config/db/net_ws/http_static/main/hotreload` 持有原生资源句柄或正处于调用栈中，不允许热更。
 - 有状态模块实现 `hotfix_save()` 与 `hotfix_restore(snap)`。重编译前由旧代码产出快照，重编译后由新代码迁移状态。
 - `world` 热更时 `bot` 作为伴随模块同步迁移（玩家表整体重建后，bot 持有的旧引用会失效），按玩家 id 到新世界重新绑定。
-- 关键点：静态 key 的 table 构造器会被编译器特化成 spec 表（访问函数位于模块 .so）。因此状态迁移时用 `pairs` 遍历旧表（直接读内部数组、不触发 spec 间接调用），并用「空 `{}` + 动态赋值」在新 .so 上下文重建所有表。
+- 关键点：静态 key 的 table 构造器会被编译器特化成 spec 表（访问函数位于模块 .so）。因此状态迁移时用 `pairs` 遍历旧表（直接读内部数组、不触发 spec 间接调用），并用「空 `{}` + 动态赋值」在新 .so 上下文重建所有表；快照跨新/旧代码传递时也只能用字符串键（`s["k"]`）读取，静态键 `s.k` 会走进旧 .so 访问器直接崩溃（`feed` 热更的既有教训）。NativeObject（deque/random/句柄）由 State 持有，快照中原样交出、恢复时挂回 upvalue 即可，对象身份保持。
 - 任一模块编译失败：旧代码继续运行，不做恢复，错误在 `hotfix_result` 中逐项报告。
 
 **用法**
@@ -451,6 +483,16 @@ fakefish/
 - [x] **可选 Redis（`redis.connect/command`）**：全局排行 ZSET 镜像（ZADD + 裁剪 + ZREVRANGE 周期流水线）与跨服世界聊天（LPUSH/LTRIM + LRANGE 拉模式，按消息 id 去重、仅转发外服消息）；连接失败/未配置静默降级。考虑 fakelua redis 封装的一次性命令回调模型，未使用 SUBSCRIBE 长订阅；`test_redis.js` 用裸 RESP 注入外服消息验证，无 Redis 自动 SKIP
 - [x] **CI 与测试**：Linux 增 redis:7 service、macOS `brew install redis` 并启动；JS 语法门禁扩到 `test_*.js`；新增 5 个 E2E（ledger/chat_utf8/metrics/webhook/redis）并把 csv/events 断言并入 `test_api.js`
 
+### Phase 17 — fakelua 剩余原生模块接入（compress / protobuf / serialize / container.deque / io / process）
+
+- [x] **gzip 协商压缩（`compress.gzip_compress`）**：所有 200 响应在 body ≥ 128B、非图片且 `Accept-Encoding` 含 `gzip`（解析 q 值，q=0 不压）时自动压缩，补 `Content-Encoding: gzip` 与 `Vary: Accept-Encoding`，pcall 失败回退原文；`test_http_compress.js` 验证逐字节往返、无 AE 原文、q=0 回退、小响应不压
+- [x] **protobuf 世界快照（`protobuf.load/encode`）**：内置 proto3 schema（`PlayerCell`：int64 id/gold、double x/y/r、bool bot；`WorldSnapshot`：repeated PlayerCell + online/bots/ts/地图尺寸），`GET /api/world.pbf` 下发二进制帧；`test_protobuf.js` 用 Node 手写 varint 解码器逐字段断言（零值标量 proto3 不上线，按默认值处理）
+- [x] **container.deque 内存事件流**：新增 `feed.lua`，原生有界环形缓冲订阅 `game.enter/game.eat(仅 full)/game.feast`，条目存预编码 JSON 字符串（容器不能存 Lua table），`GET /api/feed?limit=` 查询；`feed` 支持热更（deque 为 State 持有 NativeObject，热更不丢），热更后事件订阅按名命中新代码——实现过程中修复了快照表用静态键访问导致的重编译后崩溃
+- [x] **io 登录公告（MOTD）**：新增 `motd.lua`，`data/motd.txt` 持久化，`io.open` 读、写 `.tmp` + `os.rename` 原子替换，UTF-8 按字符限长（默认 200，钳 1-1000），拒绝 CR/控制字符，清空即删文件；`login_ok` 有公告时带 `motd` 字段，`GET /api/motd` 匿名可查
+- [x] **process 白名单管理接口**：新增 `admin.lua`，`POST /api/admin/run` 复用 `hotfix_token` 鉴权，命令只能选配置登记名、argv 完全来自配置（无 shell、不可附参数），`process.run` 同步返回 stdout/stderr/exit，超时 3s（上限 10s）；`POST /api/admin/motd` 更新公告
+- [x] **serialize 编解码自检**：`GET /api/codec/selftest` 用 `serialize.encode/decode` 与 `text_encode/text_decode` 对含中文/浮点/布尔/数组/嵌套表的样例做深比较往返
+- [x] **CI 与测试**：新增 4 个 E2E（feed/protobuf/http_compress/admin）接入双平台 CI 阶段一，`package.json` 的 test:all 与全部 test 脚本同步补全为 20 个用例
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -468,7 +510,8 @@ fakefish/
 13. **M13**：MySQL 重启后老账号可登录、战绩不丢；重复注册被拒；同账号互踢与畸形包防护生效：**已通过**（MySQL 用例以 CI 为准，本地无 MySQL 时 `test_persist.js` 自动 SKIP）
 14. **M14**：长跑无残豆/布局可复现性问题；异常退出金币损失 ≤ 一个落盘周期；挂起连接与在途鉴权刷量被限流；NaN/Inf 移动包不污染世界：**已通过**（双平台 CI）
 15. **M15**：浏览器端页面无 JS 错误、注册进场渲染正常、被踢展示具体原因；`get_rank` 任意入参均返回合法 1–20 条；CI 具备前端语法门禁且 fakelua 按上游 SHA 缓存：**已通过**（本地全量 E2E + 浏览器实测；双平台 CI 待推送后确认）
-16. **M16**：8 类 fakelua 原生能力全量接入并各配 E2E——event 事件总线解耦、sqlite 事件账本与 `/api/events`、`http.request` 出站 Webhook、`net.udp_server` 指标推送、crypto 随机盐口令（旧哈希透明迁移）、random PCG 多流（状态可热更回放）、utf8/url/csv、redis ZSET 镜像与跨服聊天（缺失自动降级/SKIP）：**待验证**（本地全量 E2E + 双平台 CI）
+16. **M16**：8 类 fakelua 原生能力全量接入并各配 E2E——event 事件总线解耦、sqlite 事件账本与 `/api/events`、`http.request` 出站 Webhook、`net.udp_server` 指标推送、crypto 随机盐口令（旧哈希透明迁移）、random PCG 多流（状态可热更回放）、utf8/url/csv、redis ZSET 镜像与跨服聊天（缺失自动降级/SKIP）：**已通过**（本地全量 E2E 16/16；双平台 CI 待推送后确认）
+17. **M17**：fakelua 剩余原生模块全部接入真实业务并各配 E2E——`compress` gzip 协商压缩（q 值/阈值/回退）、`protobuf` `/api/world.pbf` 二进制世界快照（手写 wire 解码器断言）、`container.deque` 有界内存事件流（热更不丢）、`io`+`os.rename` 原子公告（login_ok 下发/字符限长）、`process.run` token 鉴权白名单运维口、`serialize` 二进制/文本往返自检：**待验证**（本地全量 E2E + 双平台 CI）
 
 ---
 

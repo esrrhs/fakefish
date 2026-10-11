@@ -70,7 +70,9 @@ async function run() {
     log('PASS: 90 汉字按字符截断为 80 字符且 UTF-8 合法（' + buf.length + ' 字节）');
 
     // ASCII 混合场景：中英文混排也应按字符计数
-    await sleep(2200); // chat_cooldown_s = 2
+    // 冷却 2s，留 600ms 余量：满载/懒 JIT 编译可能让主循环短暂卡顿，
+    // 200ms 余量在全量套件中偶发被节流丢弃（观察到一次 wait frame timeout）
+    await sleep(2600); // chat_cooldown_s = 2
     const mixed = 'a'.repeat(50) + '字'.repeat(50); // 100 字符
     const echo2 = waitFrame(ws, (m) => m.type === 'chat' && m.name === username
                                     && charLen(m.content) === CHAT_MAX_CHARS, 8000);

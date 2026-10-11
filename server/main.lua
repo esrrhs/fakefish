@@ -44,6 +44,12 @@ function start(config_path)
     Webhook.init(all_cfg["webhook"])
     Metrics.init(all_cfg["metrics"])
 
+    -- 3.7 Phase 17：原生 deque 内存事件 feed、io 持久化登录公告、
+    -- process 白名单管理命令（均内部降级/鉴权，不阻断主服务）
+    Feed.init(all_cfg["feed"])
+    Motd.init(all_cfg["motd"])
+    Admin.init(all_cfg["admin"], srv_cfg)
+
     -- 3.8 初始化热更通道（需在 WS 服务启动前就绪）
     HotReload.init(srv_cfg)
 

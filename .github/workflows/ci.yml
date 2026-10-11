@@ -189,6 +189,22 @@ jobs:
           echo "=== Running Redis E2E Test ==="
           node test_redis.js
 
+          # Run in-memory event feed test (container.deque, event bus, hotfix persistence)
+          echo "=== Running Feed E2E Test ==="
+          node test_feed.js
+
+          # Run protobuf snapshot + serialize/base91 selftest E2E test
+          echo "=== Running Protobuf E2E Test ==="
+          node test_protobuf.js
+
+          # Run HTTP gzip content-negotiation E2E test
+          echo "=== Running HTTP Compression E2E Test ==="
+          node test_http_compress.js
+
+          # Run admin API E2E test (process.run whitelist, MOTD io persistence)
+          echo "=== Running Admin API E2E Test ==="
+          node test_admin.js
+
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="
           node test_powerup.js
@@ -410,6 +426,22 @@ jobs:
           # Run Redis ZSET mirror + cross-server chat test (spawns isolated child; SKIP without redis)
           echo "=== Running Redis E2E Test ==="
           node test_redis.js
+
+          # Run in-memory event feed test (container.deque, event bus, hotfix persistence)
+          echo "=== Running Feed E2E Test ==="
+          node test_feed.js
+
+          # Run protobuf snapshot + serialize/base91 selftest E2E test
+          echo "=== Running Protobuf E2E Test ==="
+          node test_protobuf.js
+
+          # Run HTTP gzip content-negotiation E2E test
+          echo "=== Running HTTP Compression E2E Test ==="
+          node test_http_compress.js
+
+          # Run admin API E2E test (process.run whitelist, MOTD io persistence)
+          echo "=== Running Admin API E2E Test ==="
+          node test_admin.js
 
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="

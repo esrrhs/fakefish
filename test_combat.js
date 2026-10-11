@@ -121,14 +121,29 @@ async function runCombatVerification() {
     }
     clearInterval(pelletChase);
 
-    // 阶段 2：猎物保持不动（确保不吃球增重），猎人直扑猎物
-    console.log("Phase 2: Hunter chasing Prey (Prey stays still at origin)...");
+    // 阶段 2：猎物保持不动，猎人自适应追击。
+    // 注意：不动的猎物每帧仍会结算碰撞，金币雨（CI 把 feast 调到 12s）的奖励豆若刷在
+    // 猎物半径内会被它自动吃掉、体型反超，直扑策略因此概率性失败。改为：体型不满足
+    // eat_ratio(1.05) 时就近吃豆（含金币雨奖励豆，移动收集比站着等更快），够大再直扑。
+    console.log("Phase 2: Hunter adaptive-chasing Prey (grow if needed, then strike)...");
     const hunterChase = setInterval(() => {
         if (!hunter || !prey) return;
-        const dx = prey.x - hunter.x;
-        const dy = prey.y - hunter.y;
+        let tx = prey.x;
+        let ty = prey.y;
+        if (hunter.r <= prey.r * 1.05 && foods.length > 0) {
+            // 体型不足：优先最近的豆
+            let nearest = null;
+            let minDist = 999999;
+            for (const f of foods) {
+                const dd = Math.hypot(f.x - hunter.x, f.y - hunter.y);
+                if (dd < minDist) { minDist = dd; nearest = f; }
+            }
+            if (nearest && minDist > 1) { tx = nearest.x; ty = nearest.y; }
+        }
+        const dx = tx - hunter.x;
+        const dy = ty - hunter.y;
         const dist = Math.hypot(dx, dy);
-        if (dist > 5) {
+        if (dist > 1) {
             wsHunter.send(JSON.stringify({ type: "move", dx: dx / dist, dy: dy / dist }));
         }
     }, 50);

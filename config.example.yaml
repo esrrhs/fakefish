@@ -43,6 +43,28 @@ metrics:
   port: 8092
   interval_s: 5
 
+# 内存事件 feed：fakelua 原生 container.deque 有界环形缓冲（最近进场/击杀/金币雨），
+# GET /api/feed 查询；deque 为 NativeObject，脚本热更后内容不丢
+feed:
+  enabled: true
+  capacity: 50            # 保留条数（1-200）
+
+# 登录公告（MOTD）：启动读 data/motd.txt，随 login_ok 下发；GET /api/motd 可匿名查询，
+# POST /api/admin/motd（hotfix_token 鉴权）更新，长度按 UTF-8 字符计
+motd:
+  enabled: true
+  path: "data/motd.txt"
+  max_len: 200
+
+# 管理接口（hotfix_token 鉴权）：POST /api/admin/run 执行【配置白名单】子进程。
+# process.run 不走 shell、参数完全来自下表（客户端不能附加），同步执行并带超时；
+# 仅适合秒级运维命令。未配置 token 或 enabled:false 时管理接口一律拒绝。
+admin:
+  enabled: true
+  run_timeout_ms: 3000    # 单命令超时（上限 10000ms），超时杀进程并返回 exit=9
+  commands:
+    ping: ["echo", "fakefish-pong"]
+
 game:
   map_width: 2000          # 地图宽度
   map_height: 2000         # 地图高度

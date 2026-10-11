@@ -60,12 +60,18 @@ end
 -- 进场：校验通过后建实体，login_ok 挂到玩家记录上由主循环发送
 local function finish_login(connid, acc)
     local p = World.add_player(connid, acc)
-    p.pending_login_ok = {
+    local login_ok = {
         type = "login_ok",
         player_id = p.id,
         gold = World.player_total_gold(p),
         map = World.get_map_info()
     }
+    -- 有登录公告时随登录帧下发（io 持久化的 data/motd.txt）
+    local motd = Motd.get()
+    if motd ~= nil then
+        login_ok.motd = motd
+    end
+    p.pending_login_ok = login_ok
 end
 
 -- 注册入口（WS recv 回调中调用）：

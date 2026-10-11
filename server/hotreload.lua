@@ -18,7 +18,10 @@ package "HotReload"
 local registry = {
     { name = "combat", file = "server/combat.lua", stateful = false },
     { name = "world",  file = "server/world.lua",  stateful = true, companions = { "bot" } },
-    { name = "bot",    file = "server/bot.lua",    stateful = true  }
+    { name = "bot",    file = "server/bot.lua",    stateful = true  },
+    -- feed 的状态是 State 持有的 deque NativeObject：重编译后对象仍存活，
+    -- hotfix_save/restore 只把它挂回新模块 upvalue
+    { name = "feed",   file = "server/feed.lua",   stateful = true  }
 }
 
 local admin_token = nil       -- hotfix 鉴权 token（config: server.hotfix_token）
@@ -52,6 +55,8 @@ local function save_for(name)
         return World.hotfix_save()
     elseif name == "bot" then
         return Bot.hotfix_save()
+    elseif name == "feed" then
+        return Feed.hotfix_save()
     end
     return nil
 end
@@ -62,6 +67,8 @@ local function restore_for(name, snap)
         World.hotfix_restore(snap)
     elseif name == "bot" then
         Bot.hotfix_restore(snap)
+    elseif name == "feed" then
+        Feed.hotfix_restore(snap)
     end
 end
 
