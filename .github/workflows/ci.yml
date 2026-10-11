@@ -567,6 +567,11 @@ jobs:
         with:
           node-version: 22
 
+      # E2E 用例依赖 ws 包（ubuntu/macos job 在构建步骤里 npm install，Windows 单独补）
+      - name: Install JS dependencies
+        shell: pwsh
+        run: npm install --no-audit --no-fund
+
       - name: Install MySQL
         shell: pwsh
         run: choco install mysql -y --no-progress
@@ -663,6 +668,10 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          # 继承 Windows PATH：setup-node 装的 node（C:\Program Files\nodejs）以及
+          # MySQL/Redis 工具默认不在 MSYS 的 strict PATH 里，否则后续 msys2 shell 步骤
+          # 里 `node --check` / `node test_*.js` 全部 127 command not found
+          path-type: inherit
           update: true
           install: >-
             git
