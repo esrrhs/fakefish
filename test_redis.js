@@ -19,7 +19,7 @@ const METRICS_PORT = 18392;
 const REDIS_PORT = 6379;
 const CHILD_CONFIG = 'config.redis-test.yaml';
 const CHILD_LOG = 'redis_child.log';
-const BIN = path.join('.', 'build', 'fakefish');
+const BIN = path.join('.', 'build', process.platform === 'win32' ? 'fakefish.exe' : 'fakefish');
 const READY_TIMEOUT_MS = 120000;
 
 function log(msg) { console.log('[redis] ' + msg); }

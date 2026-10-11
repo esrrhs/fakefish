@@ -15,7 +15,7 @@ const HOOK_PORT = 18095;
 const METRICS_PORT = 18098;
 const CHILD_CONFIG = 'config.webhook-test.yaml';
 const CHILD_LOG = 'webhook_child.log';
-const BIN = path.join('.', 'build', 'fakefish');
+const BIN = path.join('.', 'build', process.platform === 'win32' ? 'fakefish.exe' : 'fakefish');
 const READY_TIMEOUT_MS = 120000; // 冷启动 JIT 编译
 const FEAST_WAIT_MS = 30000;
 

@@ -532,6 +532,14 @@ fakefish/
 - [x] **审计 CSV 导出**：`GET /api/audit?format=csv` 用 `csv.encode` 导出 id/ts/actor/action/target/detail，detail 中的逗号/引号/换行自动转义
 - [x] **CI 与测试**：新增 test_admin_ops 一个 E2E 全覆盖上述能力（含 WS 侧验证公告实发与踢人断链、2 秒动态定时备份观测后关调度并清理产物）；test_backup 的篡改/复原断言改为有界轮询，规避 virtiofs/FUSE 共享卷同秒重写同尺寸文件时秒级页缓存导致的读旧竞态（不弱化最终必须检出 CRC32 的断言），双平台 CI 阶段一扩到 24 个用例
 
+### Phase 20 — Windows 移植（MSYS2 MinGW，三平台 CI）
+
+fakelua 上游 CMake 固定使用 GCC 参数（`-fPIC/-ggdb3` 等），不支持 MSVC；其官方 Windows 流水线走 MSYS2 MINGW64 + Ninja。本项目对齐该工具链，宿主与全部 Lua 业务代码无需分支即可在 Windows 运行：
+
+- [x] **admin 白名单按平台选择 argv**：`process.run` 不经 shell，Windows 没有 shell 内建的 `echo.exe`；`admin.commands` 除全平台共用的字符串数组写法外，新增 `{unix: [...], windows: [...]}` 映射形式，平台判定用 `os.getenv("OS")=="Windows_NT"`；示例 `ping` 在 Windows 显式调 `cmd.exe /d /s /c "echo fakefish-pong"`，测试同时接受 `\n`/`\r\n`
+- [x] **E2E 跨平台**：三个自起子服务器的用例（persist/redis/webhook）的二进制路径在 win32 下补 `fakefish.exe`；test_audit 经 PATH 上的 `sqlite3.exe` 注入伪造行（CI 用 mingw-w64 sqlite3 包）
+- [x] **CI 新增 `test-windows`（windows-2022）**：choco MySQL + tporadowski Redis 服务；MSYS2 MINGW64 安装 gcc/ninja/cmake/ccache/openssl/lua/sqlite3；按上游方式构建安装 fakelua（Ninja，CPM/ccache 缓存）；检出后强制 LF 重检（避免 CRLF 进入 YAML 解析值）；同清单 24 个 E2E 全跑，就绪窗口 120s（上游 fakelua Windows 为 `-O0` 构建），进程树用 `taskkill /T` 回收
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -553,6 +561,7 @@ fakefish/
 17. **M17**：fakelua 剩余原生模块全部接入真实业务并各配 E2E——`compress` gzip 协商压缩（q 值/阈值/回退）、`protobuf` `/api/world.pbf` 二进制世界快照（手写 wire 解码器断言）、`container.deque` 有界内存事件流（热更不丢）、`io`+`os.rename` 原子公告（login_ok 下发/字符限长）、`process.run` token 鉴权白名单运维口、`serialize` 二进制/文本往返自检：**已通过**（本地全量 E2E + 双平台 CI）
 18. **M18**：运维安全后台——`crypto.sha256`+sqlite 防篡改审计链（外部注入/改动 verify 必检出）、`compress.zstd`+AES-128-CBC+base64+CRC32+uuid+PCG 加密备份信封（字节级篡改检出、restore 回滚 MOTD、自动剪枝）、`log` 文件落盘与尾部拉取、`toml`/`ini` 脱敏配置导出；HTTP 入口异常兜底不杀进程、新模块支持热更：**本地 23/23 已通过；双平台 CI 待推送后确认**
 19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；双平台 CI 待推送后确认**
+20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**本地代码改动完成；Windows CI 待推送后确认**
 
 ---
 
@@ -561,9 +570,17 @@ fakefish/
 ### 1. 依赖准备
 
 - **CMake** >= 3.20
-- **C++23 编译器** (Clang / GCC)
-- **fakelua** (系统安装于 `/usr/local` 或 CMake 搜索路径，提供 `fakelua::fakelua` 目标)
+- **C++23 编译器**：Linux/macOS 用 Clang / GCC；**Windows 用 MSYS2 MINGW64 的 MinGW GCC**（fakelua 的 CMake 使用 GCC 专有参数，不支持 MSVC，工具链与其官方 Windows 流水线一致）
+- **fakelua** (系统安装于 `/usr/local`、Homebrew 前缀或 CMake 搜索路径，提供 `fakelua::fakelua` 目标)
 - **Node.js** (可选，仅运行自动化测试脚本时需要 `npm install ws`)
+
+Windows 本地构建在「MSYS2 MINGW64」终端中进行，先装依赖（SQLite CLI 仅 test_audit 需要）：
+
+```bash
+pacman -S --needed git make ninja curl \
+  mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ccache \
+  mingw-w64-x86_64-openssl mingw-w64-x86_64-lua mingw-w64-x86_64-sqlite3
+```
 
 ### 2. 数据库配置（可选）
 
@@ -571,7 +588,7 @@ fakefish/
 ```bash
 docker compose up -d
 ```
-> 若不启动 MySQL，服务器会自动降级为内存存储模式（In-Memory Store），完全不影响本地试玩与验证！
+> 若不启动 MySQL，服务器会自动降级为内存存储模式（In-Memory Store），完全不影响本地试玩与验证！Windows 本地也可直接安装 MySQL/Redis（CI 用 Chocolatey MySQL 与 tporadowski Redis）。
 
 > ⚠️ Phase 5 起 `accounts` 表新增 `best_gold` / `kills` / `deaths` 列。已有旧库需手动迁移：
 > ```sql
@@ -581,18 +598,37 @@ docker compose up -d
 ### 3. 构建
 
 ```bash
-# 1. 复制配置文件
+# 1. 复制配置文件（Windows MSYS2 终端同样执行 cp）
 cp config.example.yaml config.yaml
 
-# 2. 编译
+# 2. 编译（Linux/macOS）
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
+```
+
+Windows（MSYS2 MINGW64 终端，Ninja + MinGW GCC；fakelua 同样用该工具链先安装到自定义前缀）：
+
+```bash
+cmake -S "$HOME/flua-src" -B "$HOME/flua-src/build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/flua-install" \
+  -DFAKELUA_BUILD_TESTS=OFF -DFAKELUA_BUILD_BENCHMARKS=OFF
+cmake --build "$HOME/flua-src/build" --target install
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$HOME/flua-install"
+cmake --build build
 ```
 
 ### 4. 运行服务
 
 ```bash
-./build/fakefish --config=config.yaml
+./build/fakefish --config=config.yaml      # Windows 为 ./build/fakefish.exe
+```
+
+Windows 运行时需要让 `libfakelua.dll` 所在目录在 PATH 上（MINGW64 终端）：
+
+```bash
+export PATH="$HOME/flua-install/bin:$PATH"
+./build/fakefish.exe --config=config.yaml
 ```
 
 服务端会启动：

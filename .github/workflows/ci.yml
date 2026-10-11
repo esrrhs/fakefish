@@ -219,10 +219,6 @@ jobs:
           echo "=== Running Config Export E2E Test ==="
           node test_config_export.js
 
-          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv, scheduled backup)
-          echo "=== Running Admin Ops E2E Test ==="
-          node test_admin_ops.js
-
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="
           node test_powerup.js
@@ -238,6 +234,13 @@ jobs:
           # Run split/merge test (bot-free world, default merge cooldown)
           echo "=== Running Split E2E Test ==="
           node test_split.js
+
+          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv,
+          # scheduled backup). Kept after the live-world gameplay cases so its one encrypted
+          # backup and two-player connect churn do not perturb the time-sensitive
+          # powerup/feast/zone/split sequence on oversubscribed shared runners.
+          echo "=== Running Admin Ops E2E Test ==="
+          node test_admin_ops.js
 
           # Run hotfix test (rewrites server/combat.lua temporarily, restored at end)
           echo "=== Running Hotfix E2E Test ==="
@@ -473,10 +476,6 @@ jobs:
           echo "=== Running Config Export E2E Test ==="
           node test_config_export.js
 
-          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv, scheduled backup)
-          echo "=== Running Admin Ops E2E Test ==="
-          node test_admin_ops.js
-
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="
           node test_powerup.js
@@ -492,6 +491,13 @@ jobs:
           # Run split/merge test (bot-free world, default merge cooldown)
           echo "=== Running Split E2E Test ==="
           node test_split.js
+
+          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv,
+          # scheduled backup). Kept after the live-world gameplay cases so its one encrypted
+          # backup and two-player connect churn do not perturb the time-sensitive
+          # powerup/feast/zone/split sequence on oversubscribed shared runners.
+          echo "=== Running Admin Ops E2E Test ==="
+          node test_admin_ops.js
 
           # Run hotfix test (rewrites server/combat.lua temporarily, restored at end)
           echo "=== Running Hotfix E2E Test ==="
@@ -530,6 +536,350 @@ jobs:
 
       - name: Dump server log on failure
         if: failure()
+        run: |
+          if [ -f server.log ]; then
+            echo "=== Server Output ==="
+            cat server.log
+          fi
+          if [ -f server_bots.log ]; then
+            echo "=== Bots-phase Server Output ==="
+            cat server_bots.log
+          fi
+          if [ -f persist_child.log ]; then
+            echo "=== Persistence Child Server Output ==="
+            cat persist_child.log
+          fi
+
+  # Windows 与 ubuntu/macos 不同：fakelua 上游只支持 MinGW GCC 构建（CMake 里
+  # 无条件使用 -fPIC/-ggdb 等 GCC 参数），所以本 job 全程在 MSYS2 MINGW64 里
+  # 复刻 fakelua 官方 Windows 流水线（GCC + Ninja），与上游 build_with_windows 对齐。
+  test-windows:
+    name: Build & Test (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout fakefish
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install MySQL
+        shell: pwsh
+        run: choco install mysql -y --no-progress
+
+      - name: Start and configure MySQL
+        shell: pwsh
+        run: |
+          $service = Get-Service | Where-Object { $_.Name -like "*MySQL*" } | Select-Object -First 1
+          if ($service) {
+            Write-Host "Found MySQL service: $($service.Name)"
+            Start-Service $service.Name
+            Start-Sleep -Seconds 10
+          } else {
+            net start MySQL80 2>$null
+            net start MySQL 2>$null
+          }
+          $bins = @(
+            "$env:ChocolateyInstall\bin",
+            "C:\tools\mysql\current\bin"
+          )
+          Get-ChildItem "C:\Program Files\MySQL" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $p = Join-Path $_.FullName "bin"
+            if (Test-Path (Join-Path $p "mysql.exe")) { $bins += $p }
+          }
+          $env:Path = ($bins + $env:Path) -join ';'
+          Get-Command mysql, mysqladmin -ErrorAction Stop | ForEach-Object { Write-Host "Using $($_.Source)" }
+          $ready = $false
+          for ($i = 1; $i -le 30; $i++) {
+            & mysqladmin -h 127.0.0.1 --protocol=tcp ping 2>$null
+            if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ready) { throw "MySQL did not become ready" }
+          # choco mysql 首次安装 root 多为空密码；与 fakelua 上游一致先置 root/root，
+          # 再建 fakefish 业务账号（fakefish/changeme，与 Linux job 的 sed 改写对齐）。
+          $rootSql = @"
+          CREATE DATABASE IF NOT EXISTS test;
+          CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY 'root';
+          ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY 'root';
+          ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';
+          GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;
+          GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
+          FLUSH PRIVILEGES;
+          "@
+          $configured = $false
+          foreach ($pwd in @('', 'root')) {
+            if ($pwd -eq '') {
+              & mysql -h 127.0.0.1 -uroot --protocol=tcp -e $rootSql
+            } else {
+              & mysql -h 127.0.0.1 -uroot "-p$pwd" --protocol=tcp -e $rootSql
+            }
+            if ($LASTEXITCODE -eq 0) { $configured = $true; break }
+          }
+          if (-not $configured) { throw "Failed to configure MySQL root user" }
+          $appSql = @"
+          CREATE DATABASE IF NOT EXISTS fakefish;
+          CREATE USER IF NOT EXISTS 'fakefish'@'localhost' IDENTIFIED BY 'changeme';
+          CREATE USER IF NOT EXISTS 'fakefish'@'127.0.0.1' IDENTIFIED BY 'changeme';
+          CREATE USER IF NOT EXISTS 'fakefish'@'%' IDENTIFIED BY 'changeme';
+          GRANT ALL PRIVILEGES ON fakefish.* TO 'fakefish'@'localhost';
+          GRANT ALL PRIVILEGES ON fakefish.* TO 'fakefish'@'127.0.0.1';
+          GRANT ALL PRIVILEGES ON fakefish.* TO 'fakefish'@'%';
+          FLUSH PRIVILEGES;
+          "@
+          & mysql -h 127.0.0.1 -uroot -proot --protocol=tcp -e $appSql
+          if ($LASTEXITCODE -ne 0) { throw "Failed to create fakefish database/user" }
+          Get-Content sql/schema.sql -Raw -Encoding UTF8 |
+            & mysql -h 127.0.0.1 -u fakefish -pchangeme --protocol=tcp fakefish
+          if ($LASTEXITCODE -ne 0) { throw "schema import failed" }
+
+      - name: Install Redis
+        shell: pwsh
+        run: |
+          $ver = "5.0.14.1"
+          $url = "https://github.com/tporadowski/redis/releases/download/v$ver/Redis-x64-$ver.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "redis.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "redis"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          Add-Content -Path $env:GITHUB_PATH -Value $dest
+
+      - name: Start Redis
+        shell: pwsh
+        run: |
+          Start-Process redis-server -ArgumentList "--bind","127.0.0.1","--port","6379","--protected-mode","no" -WindowStyle Hidden
+          for ($i = 1; $i -le 30; $i++) {
+            $pong = & redis-cli -h 127.0.0.1 ping 2>$null
+            if ($pong -match "PONG") { Write-Host "Redis is ready"; exit 0 }
+            Start-Sleep -Seconds 1
+          }
+          throw "Redis did not become ready"
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            ninja
+            curl
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-lua
+            mingw-w64-x86_64-sqlite3
+
+      - name: Normalize line endings
+        shell: msys2 {0}
+        run: |
+          # Windows runner 默认 core.autocrlf=true，检出的 CRLF 可能进入 fakelua
+          # YAML 解析出的字符串值（如 MySQL 密码尾部多 \r）。强制按 LF 重检。
+          git config core.autocrlf false
+          git rm -r --cached . >/dev/null
+          git reset --hard HEAD
+
+      - name: Check JavaScript syntax
+        shell: msys2 {0}
+        run: |
+          for f in web/*.js test_*.js; do node --check "$f"; done
+
+      - name: Cache CPM/ccache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: tooling-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            tooling-${{ runner.os }}-
+
+      - name: Resolve fakelua commit
+        id: flua
+        shell: msys2 {0}
+        run: |
+          git clone --depth 1 https://github.com/esrrhs/fakelua.git "$HOME/flua-src"
+          echo "sha=$(git -C "$HOME/flua-src" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached fakelua install
+        id: cache-flua
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HOME }}/flua-install
+          key: fakelua-${{ runner.os }}-${{ steps.flua.outputs.sha }}
+
+      - name: Build and install fakelua
+        if: steps.cache-flua.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: |
+          set -eux
+          export CCACHE_DIR="$PWD/.cache/ccache"
+          export CPM_SOURCE_CACHE="$PWD/.cache/CPM"
+          mkdir -p "$CCACHE_DIR" "$CPM_SOURCE_CACHE"
+          ccache --max-size=2G
+          cmake -S "$HOME/flua-src" -B "$HOME/flua-src/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$HOME/flua-install" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DFAKELUA_TINYCC_GIT_URL=https://github.com/TinyCC/tinycc.git \
+            -DFAKELUA_BUILD_TESTS=OFF \
+            -DFAKELUA_BUILD_BENCHMARKS=OFF
+          cmake --build "$HOME/flua-src/build" --target install --parallel
+
+      - name: Build fakefish
+        shell: msys2 {0}
+        run: |
+          set -eux
+          export CCACHE_DIR="$PWD/.cache/ccache"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$HOME/flua-install" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+
+      - name: Prepare runtime configuration
+        shell: msys2 {0}
+        run: |
+          set -e
+          cp config.example.yaml config.yaml
+          # 与 Linux job 相同的锚定替换：只改第一处（mysql 段），不能全局替换空密码
+          sed -i '0,/user: "root"/s//user: "fakefish"/' config.yaml
+          sed -i '0,/password: ""/s//password: "changeme"/' config.yaml
+          sed -i 's/bot_count: 3/bot_count: 0/' config.yaml
+          sed -i 's/hotfix_token: ""/hotfix_token: "test123"/' config.yaml
+          sed -i 's/feast_interval_s: 120/feast_interval_s: 12/' config.yaml
+          sed -i 's/zone_shrink_interval_s: 60/zone_shrink_interval_s: 12/' config.yaml
+          sed -i 's/zone_hold_s: 30/zone_hold_s: 6/' config.yaml
+          npm install
+
+      - name: Run fakefish server & E2E self-test
+        shell: msys2 {0}
+        run: |
+          set -e
+          # libfakelua.dll 等运行期依赖在安装前缀的 bin 下
+          export PATH="$HOME/flua-install/bin:$PATH"
+          # 失败/退出时兜底清掉所有服务器实例（含 Node 测试自起的子实例）
+          trap 'taskkill //F //IM fakefish.exe //T 2>/dev/null || true' EXIT
+
+          ./build/fakefish.exe --config=config.yaml > server.log 2>&1 &
+          SERVER_PID=$!
+          echo "Server started with PID: $SERVER_PID"
+
+          # Windows 上 fakelua 按上游约定 -O0 构建且 JIT 走 gcc 子进程，就绪窗口放宽到 120s
+          READY=0
+          for i in $(seq 1 120); do
+            if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
+              echo "Server is ready after $i seconds!"
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ $READY -ne 1 ]; then
+            echo "Server failed to start within 120s. Log output:"
+            cat server.log
+            exit 1
+          fi
+
+          echo "=== Running WebSocket Client E2E Test ==="
+          node test_client.js
+
+          echo "=== Running Auth & Session E2E Test ==="
+          node test_auth.js
+
+          echo "=== Running Combat E2E Test ==="
+          node test_combat.js
+
+          echo "=== Running HTTP API E2E Test ==="
+          node test_api.js
+
+          echo "=== Running Ledger E2E Test ==="
+          node test_ledger.js
+
+          echo "=== Running Chat UTF-8 E2E Test ==="
+          node test_chat_utf8.js
+
+          echo "=== Running Metrics UDP E2E Test ==="
+          node test_metrics.js
+
+          echo "=== Running Webhook E2E Test ==="
+          node test_webhook.js
+
+          echo "=== Running Redis E2E Test ==="
+          node test_redis.js
+
+          echo "=== Running Feed E2E Test ==="
+          node test_feed.js
+
+          echo "=== Running Protobuf E2E Test ==="
+          node test_protobuf.js
+
+          echo "=== Running HTTP Compression E2E Test ==="
+          node test_http_compress.js
+
+          echo "=== Running Admin API E2E Test ==="
+          node test_admin.js
+
+          echo "=== Running Audit Chain E2E Test ==="
+          node test_audit.js
+
+          echo "=== Running Encrypted Backup E2E Test ==="
+          node test_backup.js
+
+          echo "=== Running Config Export E2E Test ==="
+          node test_config_export.js
+
+          echo "=== Running Admin Ops E2E Test ==="
+          node test_admin_ops.js
+
+          echo "=== Running Powerup E2E Test ==="
+          node test_powerup.js
+
+          echo "=== Running Feast E2E Test ==="
+          node test_feast.js
+
+          echo "=== Running Zone E2E Test ==="
+          node test_zone.js
+
+          echo "=== Running Split E2E Test ==="
+          node test_split.js
+
+          echo "=== Running Hotfix E2E Test ==="
+          node test_hotfix.js
+
+          # MSYS kill 对原生 Windows 进程不可靠，统一用 taskkill 树杀
+          taskkill //F //IM fakefish.exe //T 2>/dev/null || true
+          sleep 1
+          sed -i 's/bot_count: 0/bot_count: 3/' config.yaml
+          ./build/fakefish.exe --config=config.yaml > server_bots.log 2>&1 &
+          BOT_READY=0
+          for i in $(seq 1 120); do
+            if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
+              BOT_READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ $BOT_READY -ne 1 ]; then
+            echo "Server failed to restart within 120s. Log output:"
+            cat server_bots.log
+            exit 1
+          fi
+
+          echo "=== Running Bots & Rank E2E Test ==="
+          node test_bots.js
+
+          echo "=== Running Persistence (restart login) E2E Test ==="
+          node test_persist.js
+
+      - name: Dump server log on failure
+        if: failure()
+        shell: msys2 {0}
         run: |
           if [ -f server.log ]; then
             echo "=== Server Output ==="

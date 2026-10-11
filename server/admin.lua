@@ -12,11 +12,29 @@ package "Admin"
 --     enabled: true
 --     run_timeout_ms: 3000
 --     commands:
+--       # 简单形式：字符串数组全平台共用
 --       ping: ["echo", "fakefish-pong"]
+--       # 映射形式：按平台选择 argv（Windows 无 shell 内建，须显式给出可执行文件）
+--       ver:
+--         unix: ["uname", "-s"]
+--         windows: ["cmd.exe", "/d", "/s", "/c", "ver"]
 
 local admin_token = nil
 local commands = nil
 local timeout_ms = nil
+
+-- Windows 下 process.run 同样不经 shell：echo 是 shell 内建、系统里没有 echo.exe。
+-- 系统环境变量 OS=Windows_NT 自 Windows NT 起默认存在，Unix 不会同名设置，用作平台判定。
+local IS_WINDOWS = os.getenv("OS") == "Windows_NT"
+
+-- 白名单 argv 两种形式：字符串数组（全平台共用）或 {unix={...}, windows={...}}。
+local function resolve_command_argv(entry)
+    if type(entry) ~= "table" then return nil end
+    if type(entry[1]) == "string" then return entry end
+    local pick = IS_WINDOWS and entry["windows"] or entry["unix"]
+    if type(pick) ~= "table" then return nil end
+    return pick
+end
 
 function init(cfg, srv_cfg)
     commands = {}
@@ -40,7 +58,8 @@ function init(cfg, srv_cfg)
 
     local cmds = cfg["commands"]
     if type(cmds) == "table" then
-        for name, argv in pairs(cmds) do
+        for name, entry in pairs(cmds) do
+            local argv = resolve_command_argv(entry)
             if type(name) == "string" and type(argv) == "table" and #argv > 0 then
                 local valid = true
                 for i = 1, #argv do

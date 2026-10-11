@@ -17,7 +17,7 @@ const CHILD_HTTP = 18080;
 const CHILD_WS = 'ws://127.0.0.1:18081/';
 const CHILD_CONFIG = 'config.persistence-test.yaml';
 const CHILD_LOG = 'persist_child.log';
-const BIN = path.join('.', 'build', 'fakefish');
+const BIN = path.join('.', 'build', process.platform === 'win32' ? 'fakefish.exe' : 'fakefish');
 const READY_TIMEOUT_MS = 120000; // 冷启动 JIT 编译约 30-55s，留足余量
 
 function log(msg) { console.log('[persist] ' + msg); }

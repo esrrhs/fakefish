@@ -59,11 +59,15 @@ motd:
 # 管理接口（hotfix_token 鉴权）：POST /api/admin/run 执行【配置白名单】子进程。
 # process.run 不走 shell、参数完全来自下表（客户端不能附加），同步执行并带超时；
 # 仅适合秒级运维命令。未配置 token 或 enabled:false 时管理接口一律拒绝。
+# argv 支持两种写法：字符串数组=全平台共用；{unix:..., windows:...}=按平台选择
+# （Windows 没有 shell 内建的 echo，须显式给出可执行文件，此处调用 cmd.exe）。
 admin:
   enabled: true
   run_timeout_ms: 3000    # 单命令超时（上限 10000ms），超时杀进程并返回 exit=9
   commands:
-    ping: ["echo", "fakefish-pong"]
+    ping:
+      unix: ["echo", "fakefish-pong"]
+      windows: ["cmd.exe", "/d", "/s", "/c", "echo fakefish-pong"]
 
 # 管理操作防篡改审计链（fakelua sqlite + crypto.sha256）：
 # 记录 admin 命令/公告/备份/热更，每条 hash 链接前一条；

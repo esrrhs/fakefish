@@ -92,7 +92,8 @@ async function run() {
     if (ping.status !== 200) throw new Error('ping expected 200, got ' + ping.status);
     const pj = JSON.parse(ping.body);
     if (pj.code !== 0 || pj.exit !== 0) throw new Error('ping exit bad: ' + JSON.stringify(pj));
-    if (pj.stdout !== 'fakefish-pong\n') {
+    // Windows 走 cmd.exe，标准输出行为 \r\n；Unix 的 echo 为 \n，两者都接受
+    if (pj.stdout !== 'fakefish-pong\n' && pj.stdout !== 'fakefish-pong\r\n') {
         throw new Error('ping stdout mismatch: ' + JSON.stringify(pj.stdout));
     }
     log('PASS: process.run 白名单 ping -> stdout="fakefish-pong", exit=0');
