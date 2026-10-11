@@ -188,7 +188,13 @@ async function run() {
     if (!me) throw new Error('our player not found in snapshot: ' + username);
     if (typeof me.id !== 'bigint' || me.id <= 0n) throw new Error('bad id: ' + me.id);
     if (me.cell !== 1) throw new Error('cell expected 1, got ' + me.cell);
-    if (me.gold !== 100) throw new Error('gold expected 100, got ' + me.gold);
+    // 初始金币恰为 100 由 test_auth 在 login_ok 帧上精确断言；这里抓的是活世界
+    // 快照：玩家随机出生，注册后到 HTTP 快照之间只要服务端跑过一个 tick，就可能
+    // 被动吃到出生点附近的金币豆（每颗 5，含不断累积的金币雨奖励豆）。故这里只
+    // 验证 field 6（int64 varint）正确上线且语义合理：>=100，增量为 5 的倍数。
+    if (typeof me.gold !== 'number' || me.gold < 100 || (me.gold - 100) % 5 !== 0) {
+        throw new Error('gold expected 100 + 5*k, got ' + me.gold);
+    }
     if (typeof me.x !== 'number' || me.x < 0 || me.x > 2000) throw new Error('x out of range: ' + me.x);
     if (typeof me.y !== 'number' || me.y < 0 || me.y > 2000) throw new Error('y out of range: ' + me.y);
     if (typeof me.r !== 'number' || !(me.r > 0)) throw new Error('r expected >0, got ' + me.r);
