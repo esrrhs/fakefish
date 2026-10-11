@@ -114,14 +114,17 @@ async function run() {
     let cfgChild = cfgSrc
         .replace(/http_port:\s*\d+/, 'http_port: ' + CHILD_HTTP)
         .replace(/ws_port:\s*\d+/, 'ws_port: 18301')
-        .replace(/enabled:\s*false/, 'enabled: true')   // redis.enabled（配置中第一个 enabled:false）
+        // redis 段的 enabled 必须锚定替换：全局第一个 "enabled:false" 可能是
+        // redis 段上方注释里的文字（“# …或 enabled:false 时静默降级”），
+        // 裸 /enabled:\s*false/ 会只改掉注释、真实开关仍为 false。
+        .replace(/(^redis:\s*\n\s*enabled:\s*)false/m, '$1true')
         .replace(/port:\s*8092/, 'port: ' + METRICS_PORT)
         .replace(/path:\s*"data\/events\.db"/, 'path: "data/events.redis-test.db"')
         // 子实例不需要金币雨，拉长间隔避免日志噪音
         .replace(/feast_interval_s:\s*\d+/, 'feast_interval_s: 0');
 
     if (!/http_port:\s*18300/.test(cfgChild) || !/ws_port:\s*18301/.test(cfgChild)
-        || !/redis:[\s\S]*?enabled:\s*true/.test(cfgChild)) {
+        || !/^redis:\s*\n\s*enabled:\s*true/m.test(cfgChild)) {
         throw new Error('failed to rewrite child config for redis test');
     }
     fs.writeFileSync(CHILD_CONFIG, cfgChild);
@@ -135,9 +138,25 @@ async function run() {
     let childExit = null;
     child.on('exit', (code) => { childExit = code; });
 
+    // 启动后必须在日志里看到真实连接成功标记：ZSET 查询在 Redis 不可用时会静默
+    // 回退本服榜，仅看 /api/rank?scope=global 无法区分“真走 Redis”。
+    async function waitLogMark(mark, timeoutMs) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            try {
+                if (fs.readFileSync(CHILD_LOG, 'utf8').indexOf(mark) >= 0) return true;
+            } catch (e) { /* 日志尚未生成 */ }
+            await sleep(500);
+        }
+        return false;
+    }
+
     try {
         await waitHttpReady(CHILD_HTTP, READY_TIMEOUT_MS);
         log('child ready');
+        if (!(await waitLogMark('[RedisStore] connected', 10000))) {
+            throw new Error('child did not connect to redis within 10s (see ' + CHILD_LOG + ')');
+        }
 
         // 2. WS 注册进场
         const ws = await openWs(CHILD_WS_URL);

@@ -36,6 +36,18 @@ function waitFrame(ws, pred, timeoutMs) {
     });
 }
 
+// 发送聊天并按冷却周期重发，直到收到匹配帧。
+// 服务端主循环按固定 50ms tick 累加 world_time（非墙钟），CI runner 满载或懒 JIT
+// 卡顿时 world_time 落后墙钟，冷却（2s）内到达的消息会被静默丢弃且不刷新冷却时间；
+// 本测试只验证截断，不断言冷却，因此重发到命中为止最稳妥。
+function sendChatUntilEcho(ws, content, matchFrame, timeoutMs = 15000) {
+    const frameP = waitFrame(ws, matchFrame, timeoutMs);
+    const msg = JSON.stringify({ type: 'chat', content });
+    ws.send(msg);
+    const resend = setInterval(() => ws.send(msg), 1000);
+    return frameP.finally(() => clearInterval(resend));
+}
+
 async function run() {
     const ws = await openWs();
     const stamp = Date.now() % 1000000;
@@ -51,9 +63,10 @@ async function run() {
     const sent = '汉'.repeat(90);
     const expectPrefix = '汉'.repeat(CHAT_MAX_CHARS);
 
-    const echo = waitFrame(ws, (m) => m.type === 'chat' && m.name === username, 8000);
-    ws.send(JSON.stringify({ type: 'chat', content: sent }));
-    const frame = await echo;
+    // 匹配条件带上完整期望内容，避免与第二条消息的回帧互相误匹配
+    const frame = await sendChatUntilEcho(
+        ws, sent,
+        (m) => m.type === 'chat' && m.name === username && m.content === expectPrefix);
 
     if (charLen(frame.content) !== CHAT_MAX_CHARS) {
         throw new Error('expected ' + CHAT_MAX_CHARS + ' chars, got ' + charLen(frame.content)
@@ -69,17 +82,16 @@ async function run() {
     }
     log('PASS: 90 汉字按字符截断为 80 字符且 UTF-8 合法（' + buf.length + ' 字节）');
 
-    // ASCII 混合场景：中英文混排也应按字符计数
-    // 冷却 2s，留 600ms 余量：满载/懒 JIT 编译可能让主循环短暂卡顿，
-    // 200ms 余量在全量套件中偶发被节流丢弃（观察到一次 wait frame timeout）
-    await sleep(2600); // chat_cooldown_s = 2
+    // ASCII 混合场景：中英文混排也应按字符计数。无需固定 sleep 等冷却——
+    // sendChatUntilEcho 会在消息因冷却被丢弃时自动按 1s 周期重发。
     const mixed = 'a'.repeat(50) + '字'.repeat(50); // 100 字符
-    const echo2 = waitFrame(ws, (m) => m.type === 'chat' && m.name === username
-                                    && charLen(m.content) === CHAT_MAX_CHARS, 8000);
-    ws.send(JSON.stringify({ type: 'chat', content: mixed }));
-    const f2 = await echo2;
-    if (f2.content !== 'a'.repeat(50) + '字'.repeat(30)) {
-        throw new Error('mixed ascii/cjk truncation mismatch: ' + f2.content);
+    const mixedExpect = 'a'.repeat(50) + '字'.repeat(30);
+    const f2 = await sendChatUntilEcho(
+        ws, mixed,
+        (m) => m.type === 'chat' && m.name === username && m.content === mixedExpect);
+    if (charLen(f2.content) !== CHAT_MAX_CHARS) {
+        throw new Error('mixed content expected ' + CHAT_MAX_CHARS + ' chars, got '
+                        + charLen(f2.content));
     }
     log('PASS: 中英混排 100 字符截为 80 字符（50 ASCII + 30 汉字）');
 
