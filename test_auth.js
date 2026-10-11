@@ -93,6 +93,51 @@ const J = (o) => JSON.stringify(o);
   const pong = await waitFor(ws, m => m.type === 'pong', 5000).catch(() => null);
   check('connection alive & pong after malformed packets', pong && pong.type === 'pong');
 
+  // 6.5 get_rank 的 limit 钳制：非数值默认 10、下限 1、上限 20、小数向下取整。
+  // 先多注册两个账号并等排行缓存刷新（内存/MySQL 均为周期 5s），保证榜内 >=3 条，
+  // 截断行为才可断言。请求必须串行：服务端 pending_rank 每帧被最新请求覆盖。
+  // 注意用户名上限 20 字符，不能拼在 19 字符的 user 后面
+  const stamp = String(Date.now()).slice(-8);
+  for (const prefix of ['Ra', 'Rb']) {
+    const wsr = await open();
+    const pr = waitFor(wsr, mm => mm.type === 'login_ok' || mm.type === 'register_fail');
+    wsr.send(J({ type: 'register', username: prefix + stamp, password: 'abc123' }));
+    await pr;
+    wsr.close();
+  }
+  await new Promise(r => setTimeout(r, 6000));
+
+  const askRank = (raw) => {
+    const pr = waitFor(ws, mm => mm.type === 'rank' && Array.isArray(mm.list), 5000);
+    if (typeof raw === 'string') ws.send(raw);
+    else ws.send(J({ type: 'get_rank', limit: raw }));
+    return pr.then(rm => rm.list);
+  };
+  let list = await askRank(1);
+  check('get_rank limit=1 -> exactly 1 entry', list.length === 1, J(list));
+  list = await askRank(0);
+  check('get_rank limit=0 clamps to 1', list.length === 1, J(list));
+  list = await askRank(-5);
+  check('get_rank limit=-5 clamps to 1', list.length === 1, J(list));
+  list = await askRank(2.9);
+  check('get_rank limit=2.9 floors to 2', list.length === 2, J(list));
+  // 非数值字段走默认 10
+  {
+    const pr = waitFor(ws, mm => mm.type === 'rank' && Array.isArray(mm.list) && mm.list.length <= 10, 5000);
+    ws.send(J({ type: 'get_rank', limit: 'str' }));
+    const rm = await pr;
+    check('get_rank limit="str" defaults to <=10', Array.isArray(rm.list) && rm.list.length <= 10, J(rm.list));
+  }
+  list = await askRank(100);
+  check('get_rank limit=100 clamps to <=20', list.length <= 20, J(list));
+  check('get_rank cache has >=3 entries (upper-clamp observable)', list.length >= 3, J(list));
+  // 原始词法 NaN：decode 成功则按默认 10 处理，失败则整包拒收；两者都不得打死连接
+  ws.send('{"type":"get_rank","limit":NaN}');
+  await new Promise(r => setTimeout(r, 300));
+  ws.send(J({ type: 'ping' }));
+  const pong2 = await waitFor(ws, mm => mm.type === 'pong', 5000).catch(() => null);
+  check('connection alive after get_rank NaN', pong2 && pong2.type === 'pong');
+
   // 7. same account login on a new connection kicks old one
   const gotError = new Promise((resolve) => {
     ws.on('close', () => resolve('closed'));

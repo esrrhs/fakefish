@@ -28,9 +28,12 @@ function expectedRadius(gold, extra) {
 // 超时放宽到 30s：world 热更要重编译 world(137 函数) + bot(19 函数)，
 // 每个文件跑 TCC + GCC 两轮 JIT，本机实测往返 6.2-6.8s。10s 在共享 CI
 // runner 上余量仅 1.5 倍，降速即误报 timeout（功能本身正常）。
+// CI 保持 30s 预算；本地磁盘紧张/老机器重编译 world 可能 >30s，
+// 可用 HOTFIX_TIMEOUT_MS 放大（仅测试基础设施，不改判定逻辑）。
+const HOTFIX_TIMEOUT_MS = Number(process.env.HOTFIX_TIMEOUT_MS) || 30000;
 function hotfix(modules, token) {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('hotfix_result timeout')), 30000);
+        const timer = setTimeout(() => reject(new Error('hotfix_result timeout')), HOTFIX_TIMEOUT_MS);
         const handler = (m) => {
             const d = JSON.parse(m.data);
             if (d.type === 'hotfix_result') {

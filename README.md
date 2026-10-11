@@ -189,6 +189,7 @@ game:
   chat_max_len: 80
   chat_history: 20
   chat_cooldown_s: 2
+
 ```
 
 启动：`./fakefish --config=config.yaml`（或由 `flua` 加载入口脚本）。
@@ -429,6 +430,13 @@ fakefish/
 - [x] **move 方向 NaN/Inf 守卫**：`type==number` 之外再做有限性判定（fakelua 无 `math.huge`，用 `x==x and x*0==0` 同时排除 NaN 与 ±Inf），杜绝 NaN 坐标绕过边界钳制并污染全体快照
 - [x] **测试加固与卫生**：修复 `test_persist.js` 用户名超 20 字符上限的确定性失败；`test_split.js` 吃豆阶段改为按金币状态判定、短预算重选最近豆，容忍共享 CI runner 的帧速抖动；移除与 `test_combat.js` 重叠且无硬断言的 `test_gameplay.js`
 
+### Phase 15 — P2 协议/前端收尾与 CI 提速
+
+- [x] **修复前端致命语法错误**：`web/game.js` 聊天暂停移动分支误用 Lua 不等号 `~=`（JS 中为非法 token），导致整个脚本无法解析、页面所有交互失效；Node WS 测试不加载浏览器 JS 故长期漏网。改为 `!==` 并在 CI 双平台增加 `node --check web/*.js` 语法门禁
+- [x] **前端展示 error 帧**：同账号在别处登录被踢时，旧连接展示服务端下发的具体原因（toast + 登录框错误文字），不再只提示笼统的「与服务器连接已断开」
+- [x] **`get_rank` 边界钳制对齐 HTTP API**：limit 非数值/NaN 走默认 10、小数向下取整、钳制到 1–20（此前只有上沿，0/负数返回空榜，NaN 会让缓存整榜外泄）；`test_auth.js` 增加全套边界断言
+- [x] **CI fakelua 编译缓存（P3）**：先解析上游 commit SHA，按 `fakelua-<OS>-<SHA>` 缓存整个安装产物到 `$HOME/flua-install`，命中即跳过 fakelua 全量编译；fakefish 构建经 `CMAKE_PREFIX_PATH` 指向缓存前缀，上游未更新时 CI 不再重复全量 JIT 构建
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -445,6 +453,7 @@ fakefish/
 12. **M12**：运行中热更脚本逻辑、不重启不断连、世界状态与机器人完整保留：**已通过**
 13. **M13**：MySQL 重启后老账号可登录、战绩不丢；重复注册被拒；同账号互踢与畸形包防护生效：**已通过**（MySQL 用例以 CI 为准，本地无 MySQL 时 `test_persist.js` 自动 SKIP）
 14. **M14**：长跑无残豆/布局可复现性问题；异常退出金币损失 ≤ 一个落盘周期；挂起连接与在途鉴权刷量被限流；NaN/Inf 移动包不污染世界：**已通过**（双平台 CI）
+15. **M15**：浏览器端页面无 JS 错误、注册进场渲染正常、被踢展示具体原因；`get_rank` 任意入参均返回合法 1–20 条；CI 具备前端语法门禁且 fakelua 按上游 SHA 缓存：**已通过**（本地全量 E2E + 浏览器实测；双平台 CI 待推送后确认）
 
 ---
 

@@ -38,6 +38,10 @@ jobs:
         with:
           node-version: 22
 
+      - name: Check JavaScript syntax
+        run: |
+          for f in web/*.js test_*.js; do node --check "$f"; done
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -61,26 +65,41 @@ jobs:
         run: |
           mysql -h 127.0.0.1 -u fakefish -pchangeme fakefish < sql/schema.sql
 
-      - name: Clone and Install fakelua
+      - name: Resolve fakelua commit
+        id: flua
         run: |
-          git clone --depth 1 https://github.com/esrrhs/fakelua.git /tmp/fakelua
-          cmake -S /tmp/fakelua -B /tmp/fakelua/build \
+          git clone --depth 1 https://github.com/esrrhs/fakelua.git "$HOME/flua-src"
+          echo "sha=$(git -C "$HOME/flua-src" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached fakelua install
+        id: cache-flua
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HOME }}/flua-install
+          key: fakelua-${{ runner.os }}-${{ steps.flua.outputs.sha }}
+
+      - name: Build and install fakelua
+        if: steps.cache-flua.outputs.cache-hit != 'true'
+        run: |
+          cmake -S "$HOME/flua-src" -B "$HOME/flua-src/build" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_INSTALL_PREFIX="$HOME/flua-install" \
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DFAKELUA_BUILD_TESTS=OFF \
             -DFAKELUA_BUILD_BENCHMARKS=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          sudo cmake --build /tmp/fakelua/build --target install -j$(nproc)
-          echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/fakelua.conf
-          sudo ldconfig
-          echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+          cmake --build "$HOME/flua-src/build" --target install -j$(nproc)
+
+      - name: Export fakelua library path
+        run: |
+          echo "LD_LIBRARY_PATH=$HOME/flua-install/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
 
       - name: Build fakefish
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$HOME/flua-install" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build -j$(nproc)
@@ -222,6 +241,10 @@ jobs:
         with:
           node-version: 22
 
+      - name: Check JavaScript syntax
+        run: |
+          for f in web/*.js test_*.js; do node --check "$f"; done
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -242,22 +265,41 @@ jobs:
           echo "CMAKE_PREFIX_PATH=$(brew --prefix):/usr/local:${CMAKE_PREFIX_PATH:-}" >> $GITHUB_ENV
           echo "DYLD_LIBRARY_PATH=$(brew --prefix)/lib:/usr/local/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
 
-      - name: Clone and Install fakelua
+      - name: Resolve fakelua commit
+        id: flua
         run: |
-          git clone --depth 1 https://github.com/esrrhs/fakelua.git /tmp/fakelua
-          cmake -S /tmp/fakelua -B /tmp/fakelua/build \
+          git clone --depth 1 https://github.com/esrrhs/fakelua.git "$HOME/flua-src"
+          echo "sha=$(git -C "$HOME/flua-src" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached fakelua install
+        id: cache-flua
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HOME }}/flua-install
+          key: fakelua-${{ runner.os }}-${{ steps.flua.outputs.sha }}
+
+      - name: Build and install fakelua
+        if: steps.cache-flua.outputs.cache-hit != 'true'
+        run: |
+          cmake -S "$HOME/flua-src" -B "$HOME/flua-src/build" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$(brew --prefix)" \
+            -DCMAKE_INSTALL_PREFIX="$HOME/flua-install" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
             -DFAKELUA_BUILD_TESTS=OFF \
             -DFAKELUA_BUILD_BENCHMARKS=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          sudo cmake --build /tmp/fakelua/build --target install -j$(sysctl -n hw.logicalcpu)
+          cmake --build "$HOME/flua-src/build" --target install -j$(sysctl -n hw.logicalcpu)
+
+      - name: Export fakelua library path
+        run: |
+          echo "DYLD_LIBRARY_PATH=$HOME/flua-install/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
 
       - name: Build fakefish
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$HOME/flua-install;$(brew --prefix);/usr/local" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build -j$(sysctl -n hw.logicalcpu)

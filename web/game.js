@@ -13,6 +13,7 @@
     let isConnected = false;
     let authMode = "login"; // 'login' or 'register'
     let zone = null; // { x, y, r, phase, holding, next_in }
+    let serverKickReason = ""; // 服务端 error 帧携带的原因（如同账号在别处登录），随后连接会被断开
 
     // DOM 元素
     const canvas = document.getElementById("game-canvas");
@@ -129,6 +130,7 @@
         const wsUrl = `ws://${wsHost}:${wsPort}/`;
 
         ws = new WebSocket(wsUrl);
+        serverKickReason = "";
 
         ws.onopen = () => {
             isConnected = true;
@@ -148,7 +150,14 @@
             isConnected = false;
             btnSubmit.disabled = false;
             btnSubmit.innerText = authMode === "login" ? "进入竞技场" : "注册并进场";
-            showToast("与服务器连接已断开", "danger");
+            // 被服务端主动踢除（如同账号在别处登录）时展示具体原因，否则只提示断线
+            const closeMsg = serverKickReason || "与服务器连接已断开";
+            showToast(closeMsg, "danger");
+            if (serverKickReason) {
+                authError.innerText = serverKickReason;
+                authError.classList.remove("hidden");
+                serverKickReason = "";
+            }
             authModal.classList.remove("hidden");
             hud.classList.add("hidden");
             leaderboard.classList.add("hidden");
@@ -240,6 +249,13 @@
 
             case "feast":
                 handleFeastEvent(msg);
+                break;
+
+            case "error":
+                // 服务端错误通知（目前唯一场景：同账号在别处登录，旧连接被踢）。
+                // 记录原因并立即提示；连接会在服务端下一帧断开，onclose 复用该原因。
+                serverKickReason = msg.reason || "服务器错误";
+                showToast(serverKickReason, "danger");
                 break;
 
             case "pong":
@@ -647,7 +663,7 @@
 
         // 聊天输入激活时停止上报移动，避免按键被当成移动指令
         if (chatOpen) {
-            if (lastDx ~= 0 || lastDy ~= 0) {
+            if (lastDx !== 0 || lastDy !== 0) {
                 lastDx = 0;
                 lastDy = 0;
                 ws.send(JSON.stringify({ type: "move", dx: 0, dy: 0 }));
