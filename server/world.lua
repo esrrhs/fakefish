@@ -71,7 +71,7 @@ local zone_dps = nil
 
 -- 分裂球（多细胞）
 local chat_enable = true
-local chat_max_len = nil       -- 单条消息最大字节数
+local chat_max_len = nil       -- 单条消息最大字符数（UTF-8 字符）
 local chat_history = nil       -- 保留最近消息条数
 local chat_cooldown_s = nil    -- 同一玩家发消息最小间隔
 local split_max_cells = nil    -- 每名玩家最多细胞数
@@ -85,6 +85,15 @@ local merge_cooldown_s = nil   -- 分裂后需经过的秒数，细胞间才允�
 -- 注意：必须在 init() 中初始化，不能在模块级别直接赋值为 {}，
 -- 否则 fakelua JIT 会将其标记为 const table，在 C++ 回调中 table.insert 会报错
 local pending_responses = nil
+
+-- PCG 独立随机流（fakelua random.new，每流 64-bit 独立状态）：
+--   rng_spawn：出生点 / 金币豆与道具的生成、换位补给
+--   rng_feast：金币雨撒豆
+-- Bot 的决策随机由 Bot 模块自持第三路（rng_ai）。
+-- 分流避免「一个系统消耗随机数就改变所有其他系统序列」的跨系统关联；
+-- 状态经 get_state/set_state(hex) 可随热更快照存取，为确定性回放铺路。
+local rng_spawn = nil
+local rng_feast = nil
 
 -- 启动时传入的游戏配置表（热更后用于重放配置标量）
 local game_cfg = nil
@@ -105,8 +114,8 @@ end
 function spawn_foods()
     food_coins = {}
     for i = 1, max_food do
-        local rx = math.random(50, map_width - 50)
-        local ry = math.random(50, map_height - 50)
+        local rx = rng_spawn:int(50, map_width - 50)
+        local ry = rng_spawn:int(50, map_height - 50)
         table.insert(food_coins, { x = rx, y = ry })
     end
 end
@@ -117,8 +126,8 @@ local powerup_kinds = { "speed", "shield", "magnet" }
 function spawn_powerups()
     powerups = {}
     for i = 1, powerup_count do
-        local rx = math.random(60, map_width - 60)
-        local ry = math.random(60, map_height - 60)
+        local rx = rng_spawn:int(60, map_width - 60)
+        local ry = rng_spawn:int(60, map_height - 60)
         table.insert(powerups, { x = rx, y = ry, kind = powerup_kinds[(i - 1) % 3 + 1] })
     end
 end
@@ -164,6 +173,14 @@ local function apply_config(cfg)
     merge_cooldown_s = cfg["merge_cooldown_s"] or 12
 end
 
+-- 创建/重建两路 PCG 随机流。均以当前墙钟时间派生种子（不同常数偏移拉开初态），
+-- 保证每局出生点/豆位/金币雨布局不可蹲点复现；热更恢复时改用 set_state 回放原序列。
+local function init_rng()
+    local now = os.time()
+    rng_spawn = random.new(now)
+    rng_feast = random.new(now + 2654435761)
+end
+
 function init(cfg)
     players = {}
     conn_to_pid = {}
@@ -191,10 +208,10 @@ function init(cfg)
         next_in = zone_shrink_interval_s
     }
 
-    -- 播种随机数：fakelua 的 math.random 走 std::rand()，进程启动默认 srand(1)，
+    -- 随机数：出生点/金币雨各一路独立 PCG，均以当前墙钟时间播种，
     -- 不播种则每次重启豆子/道具/出生点都是同一确定序列，可被玩家记住布局蹲点。
-    -- 只在 init 播种一次：热更走 hotfix_restore，中途重播种会打断运行中的序列。
-    math.randomseed(os.time())
+    -- 只在 init 播种一次：热更走 hotfix_restore（set_state 回放），中途重播种会打断序列。
+    init_rng()
 
     spawn_foods()
     spawn_powerups()
@@ -225,6 +242,15 @@ function hotfix_save()
     s["chat_recent"] = chat_recent
     s["zone"] = zone
     s["pending_responses"] = pending_responses
+    -- PCG 随机流状态（64-bit hex）：热更后回放同一条随机序列，杜绝热更点后布局跳变
+    if rng_spawn ~= nil then
+        local ok1, st1 = pcall(function() return rng_spawn:get_state() end)
+        if ok1 then s["rng_spawn_state"] = st1 end
+    end
+    if rng_feast ~= nil then
+        local ok2, st2 = pcall(function() return rng_feast:get_state() end)
+        if ok2 then s["rng_feast_state"] = st2 end
+    end
     return s
 end
 
@@ -266,6 +292,17 @@ function hotfix_restore(s)
     chat_recent = migrate(s["chat_recent"])
     zone = migrate(s["zone"])
     pending_responses = migrate(s["pending_responses"])
+
+    -- 恢复 PCG 随机流到快照时刻的状态（NativeObject 热更后仍在；缺失则先建再恢复）
+    if rng_spawn == nil or rng_feast == nil then
+        init_rng()
+    end
+    if s["rng_spawn_state"] ~= nil then
+        pcall(function() rng_spawn:set_state(s["rng_spawn_state"]) end)
+    end
+    if s["rng_feast_state"] ~= nil then
+        pcall(function() rng_feast:set_state(s["rng_feast_state"]) end)
+    end
 end
 
 function get_map_info()
@@ -298,8 +335,8 @@ function get_random_spawn()
     local rx = 0
     local ry = 0
     for try_n = 1, 16 do
-        rx = math.random(margin, map_width - margin)
-        ry = math.random(margin, map_height - margin)
+        rx = rng_spawn:int(margin, map_width - margin)
+        ry = rng_spawn:int(margin, map_height - margin)
 
         if zone_enable and zone ~= nil then
             local zdx = rx - zone.x
@@ -308,8 +345,8 @@ function get_random_spawn()
                 -- 候选点在安全区外或贴边，重抽
                 if try_n < 16 then
                     -- 直接以圈心附近重试，提高收缩后期的命中率
-                    local ang = math.random() * 6.28318
-                    local rr = math.random(0, math.max(0, math.floor(zone.r - sr - 60)))
+                    local ang = rng_spawn:float(0, 6.28318)
+                    local rr = rng_spawn:int(0, math.max(0, math.floor(zone.r - sr - 60)))
                     rx = zone.x + math.floor(math.cos(ang) * rr)
                     ry = zone.y + math.floor(math.sin(ang) * rr)
                     if rx < margin then rx = margin end
@@ -485,6 +522,10 @@ function add_player(connid, account)
     pid_to_conn[pid] = connid
 
     print("[World] Player " .. account.username .. " (ID: " .. tostring(pid) .. ") joined the game.")
+
+    -- 进场事件：Ledger 等旁路模块订阅（可能运行于 C++ recv 回调上下文，
+    -- 订阅者只做 sqlite 同步写入等安全操作）；emit 失败不允许影响进场
+    pcall(function() event.emit("game.enter", pid, p.name, 0) end)
     return p
 end
 
@@ -514,6 +555,7 @@ function add_bot(name)
 
     players[pid] = p
     print("[World] Bot " .. name .. " (ID: " .. tostring(pid) .. ") joined the game.")
+    pcall(function() event.emit("game.enter", pid, p.name, 1) end)
     return p
 end
 
@@ -608,8 +650,17 @@ function submit_chat(connid, content)
 
     local text = trim_chat(content)
     if #text == 0 then return end
-    if #text > chat_max_len then
-        text = string.sub(text, 1, chat_max_len)
+
+    -- 按 UTF-8「字符」限长：旧实现按字节 sub，一个汉字 3 字节会被切成半个乱码。
+    -- utf8.len 遇非法字节返回 nil+位置，这种坏内容直接丢弃不予广播。
+    local nchar = utf8.len(text)
+    if nchar == nil then return end
+    if nchar > chat_max_len then
+        -- 第 (max_len+1) 个字符的起始字节位置，截到它之前即恰好 max_len 个字符
+        local cut = utf8.offset(text, chat_max_len + 1)
+        if cut ~= nil then
+            text = string.sub(text, 1, cut - 1)
+        end
     end
 
     p.last_chat = world_time
@@ -764,8 +815,8 @@ local function step_split_and_pickup()
                 if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
                     c.gold = c.gold + food_val
                     c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
-                    f.x = math.random(50, map_width - 50)
-                    f.y = math.random(50, map_height - 50)
+                    f.x = rng_spawn:int(50, map_width - 50)
+                    f.y = rng_spawn:int(50, map_height - 50)
                 end
             end
             -- 金币雨奖励豆：吃掉即移除（while 条件每轮重算 #bonus_food）
@@ -808,8 +859,8 @@ local function step_pickup_powerups()
                     table.insert(powerup_events, { player_id = p.id, name = p.name, kind = pw.kind })
 
                     -- 道具随机换位补给
-                    pw.x = math.random(60, map_width - 60)
-                    pw.y = math.random(60, map_height - 60)
+                    pw.x = rng_spawn:int(60, map_width - 60)
+                    pw.y = rng_spawn:int(60, map_height - 60)
                 end
             end
         end
@@ -1075,11 +1126,11 @@ function spawn_feast()
     -- Bot 每次决策也全量遍历，长跑下带宽与 CPU 单调膨胀。
     bonus_food = {}
 
-    local cx = math.random(300, map_width - 300)
-    local cy = math.random(300, map_height - 300)
+    local cx = rng_feast:int(300, map_width - 300)
+    local cy = rng_feast:int(300, map_height - 300)
     for i = 1, feast_bonus do
-        local bx = cx + math.random(-250, 250)
-        local by = cy + math.random(-250, 250)
+        local bx = cx + rng_feast:int(-250, 250)
+        local by = cy + rng_feast:int(-250, 250)
         if bx < 20 then bx = 20 end
         if bx > map_width - 20 then bx = map_width - 20 end
         if by < 20 then by = 20 end
@@ -1175,6 +1226,14 @@ end
 
 function get_all_players()
     return players
+end
+
+-- 按 id 查昵称（事件处理器用；找不到回退 id 字符串）
+function get_name_by_id(pid)
+    if players == nil then return tostring(pid) end
+    local p = players[pid]
+    if p ~= nil then return p.name end
+    return tostring(pid)
 end
 
 -- 服务器统计（HTTP /api/stats 用）

@@ -136,7 +136,10 @@ function async_insert_account(username, password_hash, initial_gold)
 end
 
 -- ---- 异步鉴权流水线（登录/注册共用） ----
--- entry: { kind="login"|"register", connid, username, password_hash }
+-- entry:
+--   register: { kind="register", connid, username, new_hash }  —— 随机盐哈希，注册落库
+--   login:    { kind="login",    connid, username, password }  —— 明文，SELECT 回行后验密
+-- 随机盐方案下盐存在库里，无法在入队前预算哈希，故登录队列传明文（仅进程内存短暂持有）。
 -- 调用方（recv 回调）入队后立即尝试 pump；连接暂不可用时由主循环每帧重试。
 function enqueue_auth(entry)
     ensure_inited()
@@ -252,6 +255,18 @@ function update_gold(username, account_id, gold)
             pool:release(conn)
         end
     end
+end
+
+-- 升级密码哈希（旧版固定盐 → 每账号随机盐；登录成功后透明调用）
+-- 哈希串仅含 v2:/hex/连字符/'：（分隔符），冒号不出现在盐或 digest 中，拼接安全
+function update_password(username, new_hash)
+    if pool == nil then return end
+    local conn = pool:acquire()
+    if conn == nil then return end
+    local sql = "UPDATE accounts SET password_hash = '" .. new_hash
+                .. "' WHERE username = '" .. username .. "'"
+    conn:query(sql, "DB.on_exec_result")
+    pool:release(conn)
 end
 
 -- 记击杀数

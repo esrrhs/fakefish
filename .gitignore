@@ -13,6 +13,8 @@ cmake-build-*/
 config.yaml
 *.log
 log.txt
+data/
+config.*-test.yaml
 
 # OS
 .DS_Store

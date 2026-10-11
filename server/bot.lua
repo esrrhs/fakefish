@@ -18,11 +18,16 @@ local bot_names = { "泡泡", "小鱼干", "大胃王", "闪电球", "夜行者"
 -- 注意：模块级 table 会被 fakelua JIT 标记为 const，必须运行时在 init() 中创建
 local bots = nil
 
+-- Bot 专用 PCG 随机流（决策间隔/游荡方向），与 World 的出生点、金币雨流互不关联
+local rng_ai = nil
+
 function init(cfg)
     bots = {}
     if cfg == nil then cfg = {} end
     bot_count = cfg["bot_count"] or 3
     bot_max_gold = cfg["bot_max_gold"] or 2000
+    -- 独立偏移拉开与 World 两路流的初态（同一秒启动也不同序列）
+    rng_ai = random.new(os.time() + 40503)
     if bot_count <= 0 then return end
     if bot_count > #bot_names then bot_count = #bot_names end
 
@@ -43,7 +48,7 @@ end
 
 -- 为单个机器人做一次决策，写入 ai_dx/ai_dy 与 ai_timer
 local function decide(p)
-    p.ai_timer = decision_min + math.random() * (decision_max - decision_min)
+    p.ai_timer = decision_min + rng_ai:float(0, 1) * (decision_max - decision_min)
 
     -- 自身最大/最小细胞与总金币
     local my_big = p.parts[1]
@@ -73,7 +78,7 @@ local function decide(p)
 
     -- 已吃撑的机器人不再主动觅食/猎杀，只游荡，避免一家独大
     if my_total >= bot_max_gold then
-        local a = math.random() * 6.28318
+        local a = rng_ai:float(0, 6.28318)
         p.ai_dx = math.cos(a)
         p.ai_dy = math.sin(a)
         return
@@ -184,7 +189,7 @@ local function decide(p)
     end
 
     -- 5) 游荡
-    local a = math.random() * 6.28318
+    local a = rng_ai:float(0, 6.28318)
     p.ai_dx = math.cos(a)
     p.ai_dy = math.sin(a)
 end
@@ -218,6 +223,10 @@ function hotfix_save()
         end
     end
     s["bot_ids"] = ids
+    if rng_ai ~= nil then
+        local ok, st = pcall(function() return rng_ai:get_state() end)
+        if ok then s["rng_ai_state"] = st end
+    end
     return s
 end
 
@@ -226,6 +235,12 @@ function hotfix_restore(s)
     if s == nil then return end
     bot_count = s["bot_count"]
     bot_max_gold = s["bot_max_gold"]
+    if rng_ai == nil then
+        rng_ai = random.new(os.time() + 40503)
+    end
+    if s["rng_ai_state"] ~= nil then
+        pcall(function() rng_ai:set_state(s["rng_ai_state"]) end)
+    end
     local list = {}
     local all = World.get_all_players()
     local ids = s["bot_ids"]

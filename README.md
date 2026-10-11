@@ -200,8 +200,10 @@ game:
 
 | 路由 | 说明 |
 |------|------|
-| `GET /api/rank?limit=N` | 历史最佳排行（`best_gold` 降序，limit 1-20，来自 MySQL/内存缓存） |
+| `GET /api/rank?limit=N` | 历史最佳排行（`best_gold` 降序，limit 1-20，来自 MySQL/内存缓存）；`?scope=global` 读 Redis 全局榜 |
+| `GET /api/rank.csv` | 同数据的 CSV 导出（`csv.encode` 自动转义） |
 | `GET /api/stats` | 服务器统计：在线人数、机器人数、运行时长、地图尺寸 |
+| `GET /api/events?type=&limit=` | SQLite 事件流水（type 白名单 enter/kill/feast，limit 1-100，detail 为内嵌 JSON） |
 
 示例：
 
@@ -437,6 +439,18 @@ fakefish/
 - [x] **`get_rank` 边界钳制对齐 HTTP API**：limit 非数值/NaN 走默认 10、小数向下取整、钳制到 1–20（此前只有上沿，0/负数返回空榜，NaN 会让缓存整榜外泄）；`test_auth.js` 增加全套边界断言
 - [x] **CI fakelua 编译缓存（P3）**：先解析上游 commit SHA，按 `fakelua-<OS>-<SHA>` 缓存整个安装产物到 `$HOME/flua-install`，命中即跳过 fakelua 全量编译；fakefish 构建经 `CMAKE_PREFIX_PATH` 指向缓存前缀，上游未更新时 CI 不再重复全量 JIT 构建
 
+### Phase 16 — fakelua 原生能力全量接入（事件总线 / crypto / sqlite / http / net.udp / random PCG / utf8 / url / csv / redis）
+
+- [x] **事件总线解耦（`event.on/emit`）**：吞噬/淘汰/金币雨/聊天/进场统一发 `game.*` 事件，`NetWs` 广播、Ledger 记账、Webhook 外发、Redis 跨服转发全部改为订阅者，主循环不再直接调用各旁路模块；订阅均传包内具名函数，`emit` 异常逐路 pcall 兜底
+- [x] **SQLite 事件流水账本（`sqlite.open/prepare/bind/step`）**：进场（区分玩家/机器人）、完全击杀、金币雨三类事件经预处理语句落 `data/events.db`（WAL + busy_timeout 支持多实例并发），新增 `GET /api/events?type=&limit=`（type 白名单、limit 1–100 钳制、detail 为内嵌 JSON）
+- [x] **出站 Webhook（`http.request`）**：完全击杀/金币雨异步 POST JSON 到配置 URL，具名回调只记日志；空 URL 关闭，请求失败不影响游戏主链路；`test_webhook.js` 以内建 HTTP 接收端 + 隔离子实例验证
+- [x] **UDP 指标推送口（`net.udp_server`）**：采集器发任意 UDP 包登记为 peer，服务端每 `interval_s` 推送在线数/机器人/运行时长/WS 收发包数 JSON，支持 `unregister`；`test_metrics.js` 用 node `dgram` 验证注册/推送/注销
+- [x] **crypto 随机盐口令**：`auth.lua` 弃用固定盐 SHA256，改为 `crypto.uuid()` 每账号随机盐，存储格式 `v2:<salt>:<sha256(salt:password)>`；旧哈希账号在登录成功时透明识别、校验并升级（内存 + MySQL 异步回写），注册/登录流程零数据迁移
+- [x] **PCG 多流随机（`random.new` + `get_state/set_state`）**：出生点/补给换位、金币雨、Bot AI 各一路独立 PCG，杜绝跨系统随机关联；三路 64-bit 状态纳入 world/bot 热更快照，热更后回放同一序列
+- [x] **utf8/url/csv 应用**：聊天限长改为按 UTF-8 字符截断（`utf8.len/offset`，旧按字节逻辑会把汉字切成半个乱码，非法字节直接丢弃）；HTTP query 统一走 `url.decode_query`；新增 `GET /api/rank.csv`（`csv.encode` 自动转义）；`/api/rank?scope=global` 读取 Redis 全局榜
+- [x] **可选 Redis（`redis.connect/command`）**：全局排行 ZSET 镜像（ZADD + 裁剪 + ZREVRANGE 周期流水线）与跨服世界聊天（LPUSH/LTRIM + LRANGE 拉模式，按消息 id 去重、仅转发外服消息）；连接失败/未配置静默降级。考虑 fakelua redis 封装的一次性命令回调模型，未使用 SUBSCRIBE 长订阅；`test_redis.js` 用裸 RESP 注入外服消息验证，无 Redis 自动 SKIP
+- [x] **CI 与测试**：Linux 增 redis:7 service、macOS `brew install redis` 并启动；JS 语法门禁扩到 `test_*.js`；新增 5 个 E2E（ledger/chat_utf8/metrics/webhook/redis）并把 csv/events 断言并入 `test_api.js`
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -454,6 +468,7 @@ fakefish/
 13. **M13**：MySQL 重启后老账号可登录、战绩不丢；重复注册被拒；同账号互踢与畸形包防护生效：**已通过**（MySQL 用例以 CI 为准，本地无 MySQL 时 `test_persist.js` 自动 SKIP）
 14. **M14**：长跑无残豆/布局可复现性问题；异常退出金币损失 ≤ 一个落盘周期；挂起连接与在途鉴权刷量被限流；NaN/Inf 移动包不污染世界：**已通过**（双平台 CI）
 15. **M15**：浏览器端页面无 JS 错误、注册进场渲染正常、被踢展示具体原因；`get_rank` 任意入参均返回合法 1–20 条；CI 具备前端语法门禁且 fakelua 按上游 SHA 缓存：**已通过**（本地全量 E2E + 浏览器实测；双平台 CI 待推送后确认）
+16. **M16**：8 类 fakelua 原生能力全量接入并各配 E2E——event 事件总线解耦、sqlite 事件账本与 `/api/events`、`http.request` 出站 Webhook、`net.udp_server` 指标推送、crypto 随机盐口令（旧哈希透明迁移）、random PCG 多流（状态可热更回放）、utf8/url/csv、redis ZSET 镜像与跨服聊天（缺失自动降级/SKIP）：**待验证**（本地全量 E2E + 双平台 CI）
 
 ---
 

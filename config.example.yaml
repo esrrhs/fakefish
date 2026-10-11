@@ -15,6 +15,34 @@ mysql:
   pool_size: 2
   heartbeat_ms: 5000
 
+# SQLite 事件流水账本（进场/完全击杀/金币雨；HTTP /api/events 查询）
+ledger:
+  enabled: true
+  path: "data/events.db"   # sqlite 文件路径（父目录自动创建）
+
+# 可选 Redis：跨服全局排行 ZSET 镜像 + 跨服世界聊天（LPUSH/LRANGE 拉模式）
+# 不配置 host 或 enabled:false 时静默降级（全局榜回退本服榜）
+redis:
+  enabled: false
+  host: "127.0.0.1"
+  port: 6379
+  password: ""
+  db: 0
+  timeout_ms: 3000
+
+# 出站事件 Webhook：把完全击杀/金币雨异步 POST 到该 URL；留空 url 关闭
+webhook:
+  url: ""
+  timeout_ms: 3000
+  events: ["kill"]         # 可选 "kill"、"feast"
+
+# UDP 指标推送口：采集器先发任意 UDP 包登记为 peer，服务端周期推送 JSON 指标
+metrics:
+  enabled: true
+  ip: "127.0.0.1"
+  port: 8092
+  interval_s: 5
+
 game:
   map_width: 2000          # 地图宽度
   map_height: 2000         # 地图高度
@@ -54,6 +82,6 @@ game:
 
   # 世界聊天
   chat_enable: true        # 是否启用世界聊天
-  chat_max_len: 80         # 单条消息最大字节数
+  chat_max_len: 80         # 单条消息最大字符数（按 UTF-8 字符计，非字节）
   chat_history: 20         # 服务端保留的最近消息条数
   chat_cooldown_s: 2       # 同一玩家发消息最小间隔秒数

@@ -28,6 +28,15 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
 
     steps:
       - name: Checkout fakefish
@@ -156,9 +165,29 @@ jobs:
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
 
-          # Run HTTP JSON API test (rank/stats/traversal, bot-free world)
+          # Run HTTP JSON API test (rank/stats/traversal, rank.csv, events, bot-free world)
           echo "=== Running HTTP API E2E Test ==="
           node test_api.js
+
+          # Run SQLite event ledger test (enter/feast records, /api/events)
+          echo "=== Running Ledger E2E Test ==="
+          node test_ledger.js
+
+          # Run UTF-8 chat truncation test (character-count limit)
+          echo "=== Running Chat UTF-8 E2E Test ==="
+          node test_chat_utf8.js
+
+          # Run UDP metrics push test (register/push/unregister on :8092)
+          echo "=== Running Metrics UDP E2E Test ==="
+          node test_metrics.js
+
+          # Run outbound webhook test (spawns isolated child server + local receiver)
+          echo "=== Running Webhook E2E Test ==="
+          node test_webhook.js
+
+          # Run Redis ZSET mirror + cross-server chat test (spawns isolated child; SKIP without redis)
+          echo "=== Running Redis E2E Test ==="
+          node test_redis.js
 
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="
@@ -261,9 +290,14 @@ jobs:
 
       - name: Install macOS dependencies
         run: |
-          brew install boost openssl libevent hiredis
+          brew install boost openssl libevent hiredis redis
           echo "CMAKE_PREFIX_PATH=$(brew --prefix):/usr/local:${CMAKE_PREFIX_PATH:-}" >> $GITHUB_ENV
           echo "DYLD_LIBRARY_PATH=$(brew --prefix)/lib:/usr/local/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+
+      - name: Start Redis
+        run: |
+          redis-server --daemonize yes
+          redis-cli ping
 
       - name: Resolve fakelua commit
         id: flua
@@ -353,9 +387,29 @@ jobs:
           echo "=== Running Combat E2E Test ==="
           node test_combat.js
 
-          # Run HTTP JSON API test (rank/stats/traversal, bot-free world)
+          # Run HTTP JSON API test (rank/stats/traversal, rank.csv, events, bot-free world)
           echo "=== Running HTTP API E2E Test ==="
           node test_api.js
+
+          # Run SQLite event ledger test (enter/feast records, /api/events)
+          echo "=== Running Ledger E2E Test ==="
+          node test_ledger.js
+
+          # Run UTF-8 chat truncation test (character-count limit)
+          echo "=== Running Chat UTF-8 E2E Test ==="
+          node test_chat_utf8.js
+
+          # Run UDP metrics push test (register/push/unregister on :8092)
+          echo "=== Running Metrics UDP E2E Test ==="
+          node test_metrics.js
+
+          # Run outbound webhook test (spawns isolated child server + local receiver)
+          echo "=== Running Webhook E2E Test ==="
+          node test_webhook.js
+
+          # Run Redis ZSET mirror + cross-server chat test (spawns isolated child; SKIP without redis)
+          echo "=== Running Redis E2E Test ==="
+          node test_redis.js
 
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="

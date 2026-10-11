@@ -4,6 +4,9 @@ local ws_server_obj = nil
 -- init() 中重赋值，数值字面量初始化的文件级 local 是 static const（禁止再赋值），声明 nil
 local ws_port = nil
 
+-- 吞吐计数（供 Metrics UDP 推送）：运行时在 init() 中创建
+local counters = nil
+
 -- WebSocket 事件分发（C++ 回调入口）
 -- 注意：在此回调中不能修改本模块的 local upvalue（fakelua const 限制），
 -- 也不能直接 ws_server_obj:send()（Linux 上静默丢弃）。
@@ -19,6 +22,7 @@ function on_event(type, connid, data, len, reason)
 
         -- 收到任何消息都刷新该连接的活跃时间
         World.touch_player(connid)
+        if counters ~= nil then counters.recv = counters.recv + 1 end
 
         local ok, msg = pcall(function() return json.decode(data) end)
         if not ok or msg == nil or type_of(msg) ~= "table" then
@@ -57,7 +61,7 @@ function handle_message(connid, msg)
         local dy = msg["dy"]
         -- 非数值类型直接丢弃，防止字符串进入 set_player_move 做算术；
         -- NaN/Inf 也要拦：NaN 能通过归一化（NaN 比较恒假）并让坐标变 NaN，
-        -- 骗过所有边界钳制后经快照广播污染全体客户端。fakelua 无 math.huge，
+        -- 骗过所有边界钳制后经快照广播污染全体客户端。
         -- 用「x==x 排除 NaN，x*0==0 排除 ±Inf（Inf*0 与 NaN*0 都是 NaN）」判定有限数。
         if type_of(dx) == "number" and type_of(dy) == "number"
            and dx == dx and dy == dy
@@ -77,12 +81,19 @@ function handle_message(connid, msg)
     elseif mtype == "get_rank" then
         -- 历史排行：直接读服务端缓存（DB.tick_refresh 周期从 MySQL/内存刷新）
         -- 响应挂到玩家记录上，主循环经 p.connid 发送（Linux 上队列 connid 路径会静默失败）
-        local limit = msg["limit"]
-        if type_of(limit) ~= "number" then limit = 10 end
-        if limit > 20 then limit = 20 end
+        -- 与 HTTP parse_rank_limit 对齐：非数值/NaN 走默认 10，小数向下取整，钳到 1-20。
+        -- 不做下限会让 0/负数返回空榜（虽无越界），NaN 则让 i>limit 恒假而放出整个缓存。
+        -- 必须先经 tonumber 落到数值局部：fakelua JIT 不承认 type()/type_of() 的
+        -- 分支类型窄化，守卫后对同一多态变量做 math.floor/比较会在 TCC/GCC 入口
+        -- 被硬守卫拦截（非数值入参直接 abort），见 docs/fakelua-bugs-phase16.md Bug 1。
+        local lim = tonumber(msg["limit"])
+        if lim == nil or lim ~= lim then lim = 10 end
+        lim = math.floor(lim)
+        if lim < 1 then lim = 1 end
+        if lim > 20 then lim = 20 end
         local p = World.get_player_by_conn(connid)
         if p ~= nil then
-            p.pending_rank = { type = "rank", list = DB.get_top(limit) }
+            p.pending_rank = { type = "rank", list = DB.get_top(lim) }
         end
 
     elseif mtype == "ping" then
@@ -127,8 +138,32 @@ function init(cfg)
 
     ws_server_obj = srv
     ws_server_obj:dispatch("NetWs.on_event")
+
+    counters = { recv = 0, sent = 0 }
+
+    ---- 事件总线订阅（init 仅执行一次；热更替换函数地址后自动命中新版）----
+    -- 世界规则事件不再由 main 直接调用本模块，统一经 event.emit 派发，
+    -- Ledger/Webhook/RedisStore 等旁路能力各自订阅，互不耦合。
+    event.on("game.eat", "NetWs.on_ev_eat")
+    event.on("game.death", "NetWs.on_ev_death")
+    event.on("game.feast", "NetWs.on_ev_feast")
+
     print("[NetWs] WebSocket server listening on port " .. tostring(ws_port))
     return true
+end
+
+-- ---- 事件总线处理器（均在主循环 emit 上下文中同步执行，可直接发送）----
+
+function on_ev_eat(eater_id, victim_id, gold, kind)
+    notify_eat(eater_id, victim_id, gold, kind == "full", kind == "partial")
+end
+
+function on_ev_death(victim_id, gold, x, y)
+    notify_died(victim_id, gold, x, y)
+end
+
+function on_ev_feast(x, y, count)
+    notify_feast(x, y, count)
 end
 
 -- 发送玩家暂存消息（通过 p.connid，与 broadcast 同路径）
@@ -164,6 +199,13 @@ function flush_pending()
         if item.connid == -1 then
             -- 世界广播（聊天等）：与 broadcast 同路径，遍历所有在线连接
             broadcast(item.tbl)
+            -- 本地聊天同时上事件总线：RedisStore 订阅后跨服转发。
+            -- emit 在主循环上下文；旁路订阅者自行 pcall 兜底。
+            if item.tbl ~= nil and item.tbl.type == "chat" then
+                pcall(function()
+                    event.emit("game.chat", item.tbl.name, item.tbl.content, "")
+                end)
+            end
         else
             send(item.connid, item.tbl)
         end
@@ -201,6 +243,7 @@ function send(connid, tbl)
     if ws_server_obj == nil then return end
     local json_str = json.encode(tbl)
     ws_server_obj:send(connid, json_str)
+    if counters ~= nil then counters.sent = counters.sent + 1 end
 end
 
 function broadcast(tbl)
@@ -210,8 +253,26 @@ function broadcast(tbl)
     for pid, p in pairs(all_players) do
         if p.connid ~= nil then
             ws_server_obj:send(p.connid, json_str)
+            if counters ~= nil then counters.sent = counters.sent + 1 end
         end
     end
+end
+
+-- 跨服聊天（RedisStore 从其他实例拉到后调用）：只广播、不再上事件总线，
+-- 避免「拉到自己发出的消息」造成回环（from 过滤之外的双保险）
+function broadcast_remote_chat(name, content, from)
+    broadcast({
+        type = "chat",
+        name = name,
+        content = content,
+        from = from
+    })
+end
+
+-- 吞吐计数器（Metrics 周期读取）
+function get_counters()
+    if counters == nil then return { recv = 0, sent = 0 } end
+    return { recv = counters.recv, sent = counters.sent }
 end
 
 function broadcast_snapshot()

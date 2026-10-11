@@ -59,7 +59,45 @@ async function runApiTest() {
         }
     }
 
-    // 4. 未知 API 返回 404 JSON
+    // 4. /api/rank.csv 导出（fakelua csv.encode）
+    const csv = await fetch(BASE + "/api/rank.csv?limit=5");
+    if (csv.status !== 200) {
+        console.error(`FAIL: GET /api/rank.csv expected 200, got ${csv.status}`);
+        failures++;
+    } else {
+        const ct = csv.headers.get("content-type") || "";
+        const text = await csv.text();
+        const lines = text.trim().split("\n");
+        if (ct.indexOf("text/csv") !== 0) {
+            console.error("FAIL: /api/rank.csv content-type not text/csv: " + ct);
+            failures++;
+        } else if (lines[0] !== "rank,name,best_gold,kills") {
+            console.error("FAIL: /api/rank.csv header mismatch: " + JSON.stringify(lines[0]));
+            failures++;
+        } else if (lines.length - 1 > 5) {
+            console.error("FAIL: /api/rank.csv returned more rows than limit: " + (lines.length - 1));
+            failures++;
+        } else {
+            console.log(`GET /api/rank.csv?limit=5 -> ${lines.length - 1} data rows, header OK`);
+        }
+    }
+
+    // 5. /api/events 账本 API 结构（无 SQLite 时 list 为空也算正常降级）
+    const events = await fetch(BASE + "/api/events?limit=3");
+    if (events.status !== 200) {
+        console.error(`FAIL: GET /api/events expected 200, got ${events.status}`);
+        failures++;
+    } else {
+        const j = await events.json();
+        if (j.code !== 0 || !Array.isArray(j.list) || j.count > 3) {
+            console.error("FAIL: /api/events bad structure: " + JSON.stringify(j));
+            failures++;
+        } else {
+            console.log(`GET /api/events?limit=3 -> code=0 count=${j.count}`);
+        }
+    }
+
+    // 6. 未知 API 返回 404 JSON
     const miss = await fetch(BASE + "/api/nope");
     if (miss.status !== 404) {
         console.error(`FAIL: GET /api/nope expected 404, got ${miss.status}`);

@@ -24,15 +24,25 @@ function start(config_path)
     local srv_cfg = Config.get_server()
     local mysql_cfg = Config.get_mysql()
     local game_cfg = Config.get_game()
+    local all_cfg = Config.get()
 
     -- 2. 初始化持久层
     DB.init(mysql_cfg)
+
+    -- 2.5 SQLite 事件流水账本（进场/击杀/金币雨；不可用时内部降级）
+    Ledger.init(all_cfg["ledger"])
 
     -- 3. 初始化游戏世界与规则
     World.init(game_cfg)
 
     -- 3.5 生成 AI 机器人
     Bot.init(game_cfg)
+
+    -- 3.6 可选旁路能力（Redis 排行镜像/跨服聊天、出站 Webhook、UDP 指标口）
+    -- 均为「配置缺失或连不上就静默降级」，不阻断主服务
+    RedisStore.init(all_cfg["redis"])
+    Webhook.init(all_cfg["webhook"])
+    Metrics.init(all_cfg["metrics"])
 
     -- 3.8 初始化热更通道（需在 WS 服务启动前就绪）
     HotReload.init(srv_cfg)
@@ -85,12 +95,13 @@ function start(config_path)
         -- 同账号在别处登录时，通知并断开旧连接
         NetWs.flush_kicks()
 
-        -- 金币雨到期（timer 心跳置位）：主循环里撒豆并广播——
-        -- 奖励豆 table 必须在主循环上下文创建才能跨帧存活，广播也不能进回调
+        -- 金币雨到期（timer 心跳置位）：主循环里撒豆并发事件——
+        -- 奖励豆 table 必须在主循环上下文创建才能跨帧存活，广播也不能进回调。
+        -- NetWs/Ledger/Webhook 均订阅 game.feast。
         if World.pop_feast_due() then
             local feast = World.spawn_feast()
             if feast ~= nil then
-                NetWs.notify_feast(feast.x, feast.y, feast.count)
+                pcall(function() event.emit("game.feast", feast.x, feast.y, feast.count) end)
             end
         end
 
@@ -107,6 +118,9 @@ function start(config_path)
         if kick_acc >= 1.0 then
             kick_acc = 0
             NetWs.kick_idle(conn_timeout_s)
+            -- Redis 拉取跨服聊天/同步排行（内部自行节流）；UDP 指标推送
+            RedisStore.tick()
+            Metrics.push()
         end
 
         -- 周期落盘在线玩家金币（按累计时间调度，0 或负值关闭）
@@ -133,15 +147,18 @@ function start(config_path)
         -- 物理与规则计算
         local eat_events, died_events, powerup_events = World.update(dt)
 
-        -- 吞噬与复活事件广播
+        -- 吞噬与复活事件：统一经事件总线派发。
+        -- NetWs 负责 WS 广播；Ledger 记 full 击杀流水；Webhook 出站推送 full 击杀。
         for i = 1, #eat_events do
             local ev = eat_events[i]
-            NetWs.notify_eat(ev.eater_id, ev.victim_id, ev.gold, ev.full, ev.partial)
+            local kind = "partial"
+            if ev.full then kind = "full" end
+            pcall(function() event.emit("game.eat", ev.eater_id, ev.victim_id, ev.gold, kind) end)
         end
 
         for i = 1, #died_events do
             local dev = died_events[i]
-            NetWs.notify_died(dev.victim_id, dev.gold, dev.x, dev.y)
+            pcall(function() event.emit("game.death", dev.victim_id, dev.gold, dev.x, dev.y) end)
         end
 
         -- 道具拾取事件广播
