@@ -21,7 +21,10 @@ local registry = {
     { name = "bot",    file = "server/bot.lua",    stateful = true  },
     -- feed 的状态是 State 持有的 deque NativeObject：重编译后对象仍存活，
     -- hotfix_save/restore 只把它挂回新模块 upvalue
-    { name = "feed",   file = "server/feed.lua",   stateful = true  }
+    { name = "feed",   file = "server/feed.lua",   stateful = true  },
+    -- audit 的 sqlite 连接、backup 的 aes_key/目录/PCG rng 同为 NativeObject/普通 upvalue
+    { name = "audit",  file = "server/audit.lua",  stateful = true  },
+    { name = "backup", file = "server/backup.lua", stateful = true  }
 }
 
 local admin_token = nil       -- hotfix 鉴权 token（config: server.hotfix_token）
@@ -57,6 +60,10 @@ local function save_for(name)
         return Bot.hotfix_save()
     elseif name == "feed" then
         return Feed.hotfix_save()
+    elseif name == "audit" then
+        return Audit.hotfix_save()
+    elseif name == "backup" then
+        return Backup.hotfix_save()
     end
     return nil
 end
@@ -69,6 +76,10 @@ local function restore_for(name, snap)
         Bot.hotfix_restore(snap)
     elseif name == "feed" then
         Feed.hotfix_restore(snap)
+    elseif name == "audit" then
+        Audit.hotfix_restore(snap)
+    elseif name == "backup" then
+        Backup.hotfix_restore(snap)
     end
 end
 
@@ -236,6 +247,19 @@ function process()
         print("[HotReload] hotfix request from connid=" .. tostring(req.connid)
               .. ", modules=" .. tostring(#req.modules))
         local results = reload(req.modules)
+
+        -- 热更本身写入审计链（Audit 未就绪时 record 静默跳过）
+        local mod_names = {}
+        local failed_n = 0
+        for j = 1, #results do
+            mod_names[j] = tostring(results[j].module)
+            if results[j].ok ~= true then failed_n = failed_n + 1 end
+        end
+        pcall(function()
+            Audit.record("hotfix", table.concat(mod_names, ","),
+                "failed=" .. tostring(failed_n) .. "/" .. tostring(#results), "hotfix")
+        end)
+
         World.enqueue_response(req.connid, { type = "hotfix_result", results = results })
     end
 

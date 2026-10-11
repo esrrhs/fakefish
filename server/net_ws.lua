@@ -228,14 +228,28 @@ function flush_kicks()
     end
 
     local kicks = World.drain_pending_kicks()
-    if kicks == nil then return end
-    for i = 1, #kicks do
-        local connid = kicks[i]
-        ws_server_obj:send(connid, json.encode({
-            type = "error",
-            reason = "账号已在别处登录"
-        }))
-        World.enqueue_pending_close(connid)
+    if kicks ~= nil then
+        for i = 1, #kicks do
+            local connid = kicks[i]
+            ws_server_obj:send(connid, json.encode({
+                type = "error",
+                reason = "账号已在别处登录"
+            }))
+            World.enqueue_pending_close(connid)
+        end
+    end
+
+    -- 运维口主动下线：error 帧携带管理员指定原因，同帧排队到下一帧断开
+    local akicks = World.drain_pending_admin_kicks()
+    if akicks ~= nil then
+        for i = 1, #akicks do
+            local item = akicks[i]
+            ws_server_obj:send(item["connid"], json.encode({
+                type = "error",
+                reason = item["reason"]
+            }))
+            World.enqueue_pending_close(item["connid"])
+        end
     end
 end
 

@@ -26,11 +26,34 @@ function start(config_path)
     local game_cfg = Config.get_game()
     local all_cfg = Config.get()
 
+    -- 1.5 文件日志（fakelua log 模块；任何失败静默降级，不阻断启动）
+    local log_cfg = all_cfg["log"]
+    if log_cfg ~= nil and log_cfg["enabled"] ~= false then
+        local log_path = log_cfg["path"] or "data/logs/server.log"
+        local log_dir = os.dirname(log_path)
+        if log_dir ~= nil and log_dir ~= "" and log_dir ~= "." then
+            os.mkdir(log_dir)
+        end
+        local okf, ferr = pcall(function() log.set_file(log_path) end)
+        if okf then
+            local levels = { trace = 0, debug = 1, info = 2, warn = 3, error = 4 }
+            local lv = levels[tostring(log_cfg["level"])]
+            if lv == nil then lv = 2 end
+            pcall(function() log.set_level(lv) end)
+            print("[Main] File logging enabled at " .. log_path .. " (level=" .. tostring(lv) .. ")")
+        else
+            print("[Main] Warning: log.set_file failed: " .. tostring(ferr))
+        end
+    end
+
     -- 2. 初始化持久层
     DB.init(mysql_cfg)
 
     -- 2.5 SQLite 事件流水账本（进场/击杀/金币雨；不可用时内部降级）
     Ledger.init(all_cfg["ledger"])
+
+    -- 2.6 防篡改管理操作审计链（SHA-256 哈希链；不可用时内部降级）
+    Audit.init(all_cfg["audit"])
 
     -- 3. 初始化游戏世界与规则
     World.init(game_cfg)
@@ -48,6 +71,7 @@ function start(config_path)
     -- process 白名单管理命令（均内部降级/鉴权，不阻断主服务）
     Feed.init(all_cfg["feed"])
     Motd.init(all_cfg["motd"])
+    Backup.init(all_cfg["backup"])
     Admin.init(all_cfg["admin"], srv_cfg)
 
     -- 3.8 初始化热更通道（需在 WS 服务启动前就绪）
@@ -60,7 +84,7 @@ function start(config_path)
     end
 
     -- 5. 启动 HTTP 静态前端服务
-    HttpStatic.init(srv_cfg)
+    HttpStatic.init(srv_cfg, all_cfg["log"])
 
     local tick_ms = srv_cfg["tick_ms"] or 50
     local dt = tick_ms / 1000.0
@@ -127,6 +151,15 @@ function start(config_path)
             -- Redis 拉取跨服聊天/同步排行（内部自行节流）；UDP 指标推送
             RedisStore.tick()
             Metrics.push()
+            -- 定时加密备份（backup.interval_s，0=关闭；周期可经管理口动态调整）
+            if Backup.pop_due() then
+                local cok, okc, info = pcall(function()
+                    return Backup.create("scheduled", "scheduler")
+                end)
+                if not cok or not okc then
+                    pcall(function() log.error("[backup] scheduled create failed: " .. tostring(info)) end)
+                end
+            end
         end
 
         -- 周期落盘在线玩家金币（按累计时间调度，0 或负值关闭）

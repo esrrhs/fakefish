@@ -28,6 +28,8 @@ local pending_kicks = nil
 -- 已发踢人通知、下一帧再真正断开的 connid（给发送留出一个 IO 泵周期，
 -- 否则 send 入队后同帧 close_connection 会让错误帧来不及下发）
 local pending_closes = nil
+-- 运维口主动下线队列：元素 { connid=, reason= }，主循环通知自定义原因后下一帧断开
+local pending_admin_kicks = nil
 
 -- 机器人 ID 段（与 MySQL 自增账号 ID 区隔）
 -- 注意：不能在模块级赋常量初值（fakelua JIT 会将全常量赋值的标量标记为 const），
@@ -188,6 +190,7 @@ function init(cfg)
     live_conns = {}
     pending_kicks = {}
     pending_closes = {}
+    pending_admin_kicks = {}
     pending_responses = {}
     next_bot_id = 800000
     world_time = 0
@@ -233,6 +236,7 @@ function hotfix_save()
     s["live_conns"] = live_conns
     s["pending_kicks"] = pending_kicks
     s["pending_closes"] = pending_closes
+    s["pending_admin_kicks"] = pending_admin_kicks
     s["next_bot_id"] = next_bot_id
     s["world_time"] = world_time
     s["food_coins"] = food_coins
@@ -283,6 +287,8 @@ function hotfix_restore(s)
     if pending_kicks == nil then pending_kicks = {} end
     pending_closes = migrate(s["pending_closes"])
     if pending_closes == nil then pending_closes = {} end
+    pending_admin_kicks = migrate(s["pending_admin_kicks"])
+    if pending_admin_kicks == nil then pending_admin_kicks = {} end
     next_bot_id = s["next_bot_id"]
     world_time = s["world_time"]
     food_coins = migrate(s["food_coins"])
@@ -456,6 +462,20 @@ function drain_pending_closes()
     if pending_closes == nil or #pending_closes == 0 then return nil end
     local result = pending_closes
     pending_closes = {}
+    return result
+end
+
+-- 运维口下线玩家（HTTP 管理口在 runtime.tick 同线程调用，只入队；
+-- NetWs.flush_kicks 在主循环下发 error 帧并排队下一帧断开）
+function enqueue_admin_kick(connid, reason)
+    if pending_admin_kicks == nil then pending_admin_kicks = {} end
+    table.insert(pending_admin_kicks, { connid = connid, reason = reason })
+end
+
+function drain_pending_admin_kicks()
+    if pending_admin_kicks == nil or #pending_admin_kicks == 0 then return nil end
+    local result = pending_admin_kicks
+    pending_admin_kicks = {}
     return result
 end
 
@@ -686,6 +706,40 @@ function get_recent_chat()
         table.insert(out, chat_recent[i])
     end
     return out
+end
+
+-- 运维系统公告（HTTP 管理口调用；固定发送者，不受玩家节流限制，
+-- 仍走 UTF-8 校验与限长；只入广播队列，ws 发送留主循环 flush）
+local SYSTEM_CHAT_NAME = "[系统]"
+function system_chat(content)
+    if chat_recent == nil then return false, "chat disabled" end
+    if type(content) ~= "string" then return false, "message must be a string" end
+
+    local text = trim_chat(content)
+    if #text == 0 then return false, "empty message" end
+
+    local nchar = utf8.len(text)
+    if nchar == nil then return false, "invalid utf8" end
+    if nchar > chat_max_len then
+        local cut = utf8.offset(text, chat_max_len + 1)
+        if cut ~= nil then
+            text = string.sub(text, 1, cut - 1)
+        end
+    end
+
+    local entry = { name = SYSTEM_CHAT_NAME, content = text, t = math.floor(world_time) }
+    table.insert(chat_recent, entry)
+    if #chat_recent > chat_history then
+        table.remove(chat_recent, 1)
+    end
+
+    enqueue_response(-1, {
+        type = "chat",
+        name = SYSTEM_CHAT_NAME,
+        content = text,
+        system = true
+    })
+    return true, text
 end
 
 function get_player_by_conn(connid)
@@ -1226,6 +1280,51 @@ end
 
 function get_all_players()
     return players
+end
+
+-- 按数字 pid 或精确昵称定位在线实体（运维口用；找不到返回 nil）
+function find_player(target)
+    if players == nil or target == nil then return nil end
+    local as_num = tonumber(target)
+    if as_num ~= nil then
+        local p = players[as_num]
+        if p ~= nil then return p end
+    end
+    local want = tostring(target)
+    for _, p in pairs(players) do
+        if p.name == want then return p end
+    end
+    return nil
+end
+
+-- 运维口在线玩家清单（精简字段；机器人 connid 为空）
+function admin_list_players()
+    local out = {}
+    if players == nil then return out end
+    for _, p in pairs(players) do
+        local gx = nil
+        local gy = nil
+        local cells = 0
+        if p.parts ~= nil then
+            cells = #p.parts
+            if cells > 0 then
+                gx = p.parts[1].x
+                gy = p.parts[1].y
+            end
+        end
+        table.insert(out, {
+            id = p.id,
+            name = p.name,
+            bot = p.is_bot == true,
+            gold = total_gold(p),
+            x = gx,
+            y = gy,
+            cells = cells,
+            connid = p.connid,
+            last_seen = p.last_seen
+        })
+    end
+    return out
 end
 
 -- 按 id 查昵称（事件处理器用；找不到回退 id 字符串）

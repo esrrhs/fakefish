@@ -65,6 +65,31 @@ admin:
   commands:
     ping: ["echo", "fakefish-pong"]
 
+# 管理操作防篡改审计链（fakelua sqlite + crypto.sha256）：
+# 记录 admin 命令/公告/备份/热更，每条 hash 链接前一条；
+# GET /api/audit?token= 查询，GET /api/audit/verify?token= 重放校验，任何外部改动都能检出
+audit:
+  enabled: true
+  path: "data/audit.db"
+
+# 加密世界备份（fakelua compress.zstd + crypto AES-CBC/base64/crc32/uuid）：
+# POST /api/admin/backup  {"token":"...","action":"create|list|inspect|restore|delete|status|schedule","id":"...","interval_s":N}
+# 备份文件不含明文（zstd 后 AES 加密再 base64），篡改一个字节即被 CRC32/解密阶段检出。
+# aes_key 必须为 16 字符（fakelua crypto 绑定当前仅开放 AES-128-CBC）；生产环境务必更换
+backup:
+  enabled: true
+  dir: "data/backups"
+  aes_key: "0123456789abcdef"
+  keep: 10                # 自动保留份数（1-50），超出删最旧
+  interval_s: 0           # 定时自动备份周期秒（0=关闭，建议 3600；1..86400，可经管理口动态调整）
+
+# 文件日志（fakelua log 模块）：后台审计/备份事件同步写文件，
+# GET /api/admin/logs?token=...&lines=100 读取尾部（最多 64KB/500 行）
+log:
+  enabled: true
+  path: "data/logs/server.log"
+  level: "info"           # trace / debug / info / warn / error
+
 game:
   map_width: 2000          # 地图宽度
   map_height: 2000         # 地图高度

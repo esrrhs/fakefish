@@ -207,6 +207,21 @@ admin:                     # 管理接口（复用 server.hotfix_token 鉴权）
   run_timeout_ms: 3000     # 单命令超时，上限 10000
   commands:                # 进程白名单：客户端只能选名字，不能附加参数
     ping: ["echo", "fakefish-pong"]
+
+audit:                     # 管理操作防篡改审计链（sqlite + crypto.sha256）
+  enabled: true
+  path: data/audit.db      # DELETE 日志模式：外部进程改动对 verify 立即可见
+
+backup:                    # 加密世界备份（zstd + AES-128-CBC + base64 + crc32）
+  enabled: true
+  dir: data/backups
+  aes_key: "0123456789abcdef"  # 必须 16 字符（fakelua crypto 绑定仅开放 AES-128）
+  keep: 10                 # 自动保留份数 1-50
+
+log:                       # 文件日志（fakelua log 模块）
+  enabled: true
+  path: data/logs/server.log
+  level: info              # trace/debug/info/warn/error
 ```
 
 启动：`./fakefish --config=config.yaml`（或由 `flua` 加载入口脚本）。
@@ -220,6 +235,7 @@ admin:                     # 管理接口（复用 server.hotfix_token 鉴权）
 | `GET /api/rank?limit=N` | 历史最佳排行（`best_gold` 降序，limit 1-20，来自 MySQL/内存缓存）；`?scope=global` 读 Redis 全局榜 |
 | `GET /api/rank.csv` | 同数据的 CSV 导出（`csv.encode` 自动转义） |
 | `GET /api/stats` | 服务器统计：在线人数、机器人数、运行时长、地图尺寸 |
+| `GET /api/health` | 免鉴权存活/就绪探针：uptime、online/bots、`components`（ledger/audit/backup/redis 布尔、db_mode/db_connected）、最近备份时间戳 |
 | `GET /api/events?type=&limit=` | SQLite 事件流水（type 白名单 enter/kill/feast，limit 1-100，detail 为内嵌 JSON） |
 | `GET /api/feed?limit=N` | 内存事件流（deque 最近 N 条：enter/kill/feast，limit 钳 1-100，默认 20） |
 | `GET /api/world.pbf` | protobuf3 二进制世界快照（`WorldSnapshot{repeated PlayerCell,...}`，Content-Type: application/x-protobuf） |
@@ -227,6 +243,12 @@ admin:                     # 管理接口（复用 server.hotfix_token 鉴权）
 | `GET /api/codec/selftest` | `serialize` 二进制 + `text_encode` 文本往返自检，返回 `bin_equal/text_equal` |
 | `POST /api/admin/run` | 执行配置白名单命令，body `{token, cmd}`，返回 `{stdout, stderr, exit}` |
 | `POST /api/admin/motd` | 更新/清空公告，body `{token, motd}`（motd 为 null 清除并删文件） |
+| `POST /api/admin/backup` | 加密备份管理，body `{token, action: create\|list\|inspect\|restore\|delete\|status\|schedule, id?, reason?, interval_s?}`；schedule 动态设定定时备份周期（0 关，1-86400 秒），status 查调度与最近备份 |
+| `POST /api/admin/players` | 在线玩家管控，body `{token, action: list\|kick\|say\|save, id?/name?, reason?, message?}`；kick 两阶段下发自定义原因再断链，say 为全服系统公告，save 立即落盘金币 |
+| `GET /api/audit?token=&limit=&format=csv` | 防篡改审计链最近记录（新→旧，limit 钳 1-200）；`format=csv` 导出 text/csv（`csv.encode` 转义） |
+| `GET /api/audit/verify?token=` | 从头重放 SHA-256 哈希链，返回 `{ok, count, broken?}`，任何外部改动可检出 |
+| `GET /api/admin/logs?token=&lines=` | 读取文件日志尾部（上限 64KB/500 行） |
+| `GET /api/admin/config?token=&format=` | 脱敏配置导出，`json`（全量）/`toml`/`ini`（标量两段），敏感键打码 `***` |
 
 示例：
 
@@ -493,6 +515,23 @@ fakefish/
 - [x] **serialize 编解码自检**：`GET /api/codec/selftest` 用 `serialize.encode/decode` 与 `text_encode/text_decode` 对含中文/浮点/布尔/数组/嵌套表的样例做深比较往返
 - [x] **CI 与测试**：新增 4 个 E2E（feed/protobuf/http_compress/admin）接入双平台 CI 阶段一，`package.json` 的 test:all 与全部 test 脚本同步补全为 20 个用例
 
+### Phase 18 — 运维安全增强（sqlite 哈希链审计 / zstd+AES 加密备份 / 文件日志 / 脱敏配置导出）
+
+- [x] **防篡改审计链（`crypto.sha256` + sqlite）**：新增 `audit.lua`，管理动作（`admin.run`/`admin.motd`/`backup.*`/热更）追加记录 `hash = sha256(prev_hash|ts|actor|action|target|detail)`，首条接 GENESIS；`GET /api/audit` 查最近记录、`GET /api/audit/verify` 重放全链并报告首个断裂点。审计库刻意用 DELETE 回滚日志而非 WAL，且 verify/list 走现开现关的短连接：WAL 长连接的读视图会冻结在自身最近写事务的时点，外部进程（sqlite3 CLI/DBA 工具）的篡改不可见；虚拟共享卷（virtiofs）也不支持 WAL 所需的共享内存 mmap（第二连接 SQLITE_IOERR）
+- [x] **加密世界备份信封（`compress.zstd` + `crypto.aes_encrypt_cbc` + `base64` + `crc32` + `uuid` + `random` PCG）**：新增 `backup.lua`，采集 MOTD/世界统计/Top100 排行/事件流水/事件流 → JSON → zstd(level 3) → AES-128-CBC（PCG 混合播种的随机 16 字节 IV；fakelua crypto 绑定当前仅开放 AES-128，key 必须 16 字节）→ 外层信封 `{magic,id,ts,reason,iv,crc32(密文),body=base64}` 原子落盘（`.tmp`+rename），文件名含完整 uuid。校验链 base64→CRC32→AES→zstd→magic/version→内外 id 一致，篡改一个字节即在 CRC32 阶段被检出；`POST /api/admin/backup` 支持 create/list/inspect/restore/delete，id 接受完整 uuid、8 位短 id 或文件名，拒绝 `/`、`\`、`..`；restore 仅回写 MOTD（不覆盖运行态）；超 `keep` 份自动剪枝（list 按 ts 数值排序，同秒备份以文件名字节序 tiebreak——fakelua 的关系运算符对字符串按算术处理，字符串参与 `>` 会抛 arithmetic 错误，不能依赖 Lua 原生字符串字典序）
+- [x] **文件日志落盘（`log.set_file/set_level`）**：`log` 配置段（path/level trace..error，缺省 `data/logs/server.log`/info），审计与备份事件同步写文件；`GET /api/admin/logs?token=&lines=` 用 `file:seek` 只读尾部 64KB（最多 500 行）
+- [x] **脱敏配置三格式导出（`toml.encode`/`ini.encode`）**：`GET /api/admin/config?format=json|toml|ini`，递归将键名含 password/secret/token/aes_key 的值打码 `***`；json 导全量、toml/ini 导固定段的标量两层（text/plain），非法 format 400
+- [x] **健壮性加固**：HTTP C++ 回调入口 `on_request` 用 pcall 兜底，任何 handler 内部异常（fakelua 对跨包调用参数数量/类型严格检查）只回 500，不再穿透主循环杀进程；audit/backup 注册进热更编排（stateful，NativeObject 连接与配置随快照迁移），热更动作本身也写审计链
+- [x] **CI 与测试**：新增 3 个 E2E（test_audit 用 sqlite3 CLI 注入伪造行验证检出后删除自愈；test_backup 覆盖 create/inspect/restore/MOTD 回滚/字节篡改/CRC32/delete/穿越/鉴权；test_config_export 覆盖三格式打码与 400/403），双平台 CI 阶段一扩到 23 个用例
+
+### Phase 19 — 运维控制台深化（健康探针 / 在线玩家管控 / 定时备份 / 审计 CSV）
+
+- [x] **免鉴权健康探针（`GET /api/health`）**：进程存活与就绪巡检入口，返回 uptime、online/bots、`components` 子系统布尔状态（ledger/audit/backup/redis）、`db_mode`（memory/mysql）与连通性、最近备份时间戳；只暴露布尔与计数，无任何敏感信息，可直接接 K8s liveness/readiness
+- [x] **在线玩家管控（`POST /api/admin/players`）**：`list` 返回在线清单（pid/昵称/gold/坐标/细胞数/connid/是否机器人）；`kick` 按数字 pid 或精确昵称下线，error 帧携带管理员自定义原因，沿用「本帧通知、下一帧断开」的两阶段 WS 关闭模式（机器人无连接返回 400，玩家不存在 404）；`say` 发送全服系统公告（固定 `[系统]` 发送者、`system:true` 标记，仍走 UTF-8 校验与按字符限长，入聊天历史与跨服事件总线）；`save` 立即落盘全部在线金币；全部动作写审计链
+- [x] **定时加密备份（`backup.interval_s`）**：配置初始周期（0=关闭，1..86400 秒），主循环每秒 `Backup.pop_due()` 到期触发 `create("scheduled","scheduler")` 并自动顺延，错过多个周期只补一次避免备份风暴；`POST /api/admin/backup` 新增 `schedule`（运行时动态调整并重置倒计时，非法值 400）与 `status`（enabled/interval_s/next_in_s/last_ts/last_name）；调度状态与最近备份信息随热更快照迁移
+- [x] **审计 CSV 导出**：`GET /api/audit?format=csv` 用 `csv.encode` 导出 id/ts/actor/action/target/detail，detail 中的逗号/引号/换行自动转义
+- [x] **CI 与测试**：新增 test_admin_ops 一个 E2E 全覆盖上述能力（含 WS 侧验证公告实发与踢人断链、2 秒动态定时备份观测后关调度并清理产物）；test_backup 的篡改/复原断言改为有界轮询，规避 virtiofs/FUSE 共享卷同秒重写同尺寸文件时秒级页缓存导致的读旧竞态（不弱化最终必须检出 CRC32 的断言），双平台 CI 阶段一扩到 24 个用例
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -511,7 +550,9 @@ fakefish/
 14. **M14**：长跑无残豆/布局可复现性问题；异常退出金币损失 ≤ 一个落盘周期；挂起连接与在途鉴权刷量被限流；NaN/Inf 移动包不污染世界：**已通过**（双平台 CI）
 15. **M15**：浏览器端页面无 JS 错误、注册进场渲染正常、被踢展示具体原因；`get_rank` 任意入参均返回合法 1–20 条；CI 具备前端语法门禁且 fakelua 按上游 SHA 缓存：**已通过**（本地全量 E2E + 浏览器实测；双平台 CI 待推送后确认）
 16. **M16**：8 类 fakelua 原生能力全量接入并各配 E2E——event 事件总线解耦、sqlite 事件账本与 `/api/events`、`http.request` 出站 Webhook、`net.udp_server` 指标推送、crypto 随机盐口令（旧哈希透明迁移）、random PCG 多流（状态可热更回放）、utf8/url/csv、redis ZSET 镜像与跨服聊天（缺失自动降级/SKIP）：**已通过**（本地全量 E2E 16/16；双平台 CI 待推送后确认）
-17. **M17**：fakelua 剩余原生模块全部接入真实业务并各配 E2E——`compress` gzip 协商压缩（q 值/阈值/回退）、`protobuf` `/api/world.pbf` 二进制世界快照（手写 wire 解码器断言）、`container.deque` 有界内存事件流（热更不丢）、`io`+`os.rename` 原子公告（login_ok 下发/字符限长）、`process.run` token 鉴权白名单运维口、`serialize` 二进制/文本往返自检：**待验证**（本地全量 E2E + 双平台 CI）
+17. **M17**：fakelua 剩余原生模块全部接入真实业务并各配 E2E——`compress` gzip 协商压缩（q 值/阈值/回退）、`protobuf` `/api/world.pbf` 二进制世界快照（手写 wire 解码器断言）、`container.deque` 有界内存事件流（热更不丢）、`io`+`os.rename` 原子公告（login_ok 下发/字符限长）、`process.run` token 鉴权白名单运维口、`serialize` 二进制/文本往返自检：**已通过**（本地全量 E2E + 双平台 CI）
+18. **M18**：运维安全后台——`crypto.sha256`+sqlite 防篡改审计链（外部注入/改动 verify 必检出）、`compress.zstd`+AES-128-CBC+base64+CRC32+uuid+PCG 加密备份信封（字节级篡改检出、restore 回滚 MOTD、自动剪枝）、`log` 文件落盘与尾部拉取、`toml`/`ini` 脱敏配置导出；HTTP 入口异常兜底不杀进程、新模块支持热更：**本地 23/23 已通过；双平台 CI 待推送后确认**
+19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；双平台 CI 待推送后确认**
 
 ---
 

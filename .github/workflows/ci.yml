@@ -207,6 +207,22 @@ jobs:
           echo "=== Running Admin API E2E Test ==="
           node test_admin.js
 
+          # Run tamper-evident audit chain E2E (sqlite + crypto.sha256; sqlite3 CLI required)
+          echo "=== Running Audit Chain E2E Test ==="
+          node test_audit.js
+
+          # Run encrypted world backup E2E (compress.zstd + crypto AES-CBC/base64/crc32/uuid)
+          echo "=== Running Encrypted Backup E2E Test ==="
+          node test_backup.js
+
+          # Run masked config export E2E (json/toml/ini)
+          echo "=== Running Config Export E2E Test ==="
+          node test_config_export.js
+
+          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv, scheduled backup)
+          echo "=== Running Admin Ops E2E Test ==="
+          node test_admin_ops.js
+
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="
           node test_powerup.js
@@ -444,6 +460,22 @@ jobs:
           # Run admin API E2E test (process.run whitelist, MOTD io persistence)
           echo "=== Running Admin API E2E Test ==="
           node test_admin.js
+
+          # Run tamper-evident audit chain E2E (sqlite + crypto.sha256; sqlite3 CLI required)
+          echo "=== Running Audit Chain E2E Test ==="
+          node test_audit.js
+
+          # Run encrypted world backup E2E (compress.zstd + crypto AES-CBC/base64/crc32/uuid)
+          echo "=== Running Encrypted Backup E2E Test ==="
+          node test_backup.js
+
+          # Run masked config export E2E (json/toml/ini)
+          echo "=== Running Config Export E2E Test ==="
+          node test_config_export.js
+
+          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv, scheduled backup)
+          echo "=== Running Admin Ops E2E Test ==="
+          node test_admin_ops.js
 
           # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
           echo "=== Running Powerup E2E Test ==="

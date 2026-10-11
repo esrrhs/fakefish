@@ -3,6 +3,7 @@ package "HttpStatic"
 local http_srv = nil
 local web_dir = "web"
 local pbf_ready = nil
+local log_path = nil
 
 -- 小于该字节数的响应不做 gzip（压缩收益不抵开销）
 local gzip_min_bytes = 128
@@ -116,8 +117,22 @@ end
 -- 注意：回调上下文只能读模块状态、构造新表，不能写模块级 upvalue
 function on_request(typ, connid, req)
     if typ ~= "request" then return end
-    local resp = dispatch_request(req)
-    return maybe_compress(req, resp)
+    -- 任何 handler 内部异常都不得穿透到主循环导致进程退出：
+    -- fakelua CallByName 对参数数量/类型是严格检查，请求侧输入必须全部容错
+    local ok, resp = pcall(function()
+        return maybe_compress(req, dispatch_request(req))
+    end)
+    if not ok or type(resp) ~= "table" then
+        return {
+            status = 500,
+            headers = {
+                ["Content-Type"] = "application/json; charset=utf-8",
+                ["Access-Control-Allow-Origin"] = "*"
+            },
+            body = '{"code":500,"msg":"internal error"}'
+        }
+    end
+    return resp
 end
 
 function dispatch_request(req)
@@ -248,6 +263,138 @@ local function codec_selftest()
     }))
 end
 
+-- 加密备份管理：action = create | list | inspect | restore | delete
+local function handle_backup(params)
+    local action = params["action"]
+    if type(action) ~= "string" then
+        return api_json(400, '{"code":400,"msg":"action required"}')
+    end
+
+    if not Backup.is_ready() then
+        return api_json(503, '{"code":503,"msg":"backup disabled (check backup.aes_key)"}')
+    end
+
+    if action == "create" then
+        local ok, meta = Backup.create(params["reason"], "http")
+        if not ok then
+            return api_json(400, json.encode({ code = 400, msg = meta }))
+        end
+        return api_json(200, json.encode({ code = 0, backup = meta }))
+    end
+
+    if action == "list" then
+        local items = Backup.list_backups()
+        return api_json(200, json.encode({ code = 0, count = #items, list = items }))
+    end
+
+    if action == "status" then
+        return api_json(200, json.encode({ code = 0, schedule = Backup.schedule_status() }))
+    end
+
+    if action == "schedule" then
+        local sok, sres = Backup.set_interval(params["interval_s"])
+        if not sok then
+            return api_json(400, json.encode({ code = 400, msg = sres }))
+        end
+        pcall(function()
+            Audit.record("backup.schedule", nil, "interval_s=" .. tostring(params["interval_s"]), "http")
+        end)
+        return api_json(200, json.encode({ code = 0, schedule = sres }))
+    end
+
+    if action == "inspect" then
+        local ok, summary = Backup.inspect(params["id"])
+        if not ok then
+            return api_json(400, json.encode({ code = 400, msg = summary }))
+        end
+        return api_json(200, json.encode({ code = 0, backup = summary }))
+    end
+
+    if action == "restore" then
+        local ok, res = Backup.restore(params["id"], "http")
+        if not ok then
+            return api_json(400, json.encode({ code = 400, msg = res }))
+        end
+        return api_json(200, json.encode({ code = 0, result = res }))
+    end
+
+    if action == "delete" then
+        local ok, res = Backup.delete(params["id"], "http")
+        if not ok then
+            return api_json(400, json.encode({ code = 400, msg = res }))
+        end
+        return api_json(200, json.encode({ code = 0, result = res }))
+    end
+
+    return api_json(400, json.encode({ code = 400, msg = "unknown backup action: " .. action }))
+end
+
+-- 在线玩家管控（POST，已通过 token 鉴权）：
+--   action=list  在线清单（含机器人；bot.connid 为空）
+--   action=kick  按 id（数字 pid）或 name 精确下线，reason 可选
+--   action=say   全服系统公告（message/content，UTF-8 限长由 World 处理）
+--   action=save  立即落盘全部在线玩家金币
+local function handle_players(params)
+    local action = params["action"]
+    if type(action) ~= "string" then
+        return api_json(400, '{"code":400,"msg":"action required"}')
+    end
+
+    if action == "list" then
+        local rows = World.admin_list_players()
+        return api_json(200, json.encode({ code = 0, count = #rows, list = rows }))
+    end
+
+    if action == "kick" then
+        local target = params["id"]
+        if target == nil then target = params["name"] end
+        if target == nil then
+            return api_json(400, '{"code":400,"msg":"id or name required"}')
+        end
+        local p = World.find_player(target)
+        if p == nil then
+            return api_json(404, '{"code":404,"msg":"player not found"}')
+        end
+        if p.connid == nil then
+            return api_json(400, '{"code":400,"msg":"target has no live connection (bot cannot be kicked)"}')
+        end
+        local reason = params["reason"]
+        if type(reason) ~= "string" or #reason == 0 then
+            reason = "你已被管理员下线"
+        end
+        if #reason > 200 then reason = string.sub(reason, 1, 200) end
+        World.enqueue_admin_kick(p.connid, reason)
+        pcall(function()
+            Audit.record("admin.kick", tostring(p.name), "id=" .. tostring(p.id), "http")
+        end)
+        return api_json(200, json.encode({ code = 0, kicked = p.id, name = p.name }))
+    end
+
+    if action == "say" then
+        local content = params["message"]
+        if type(content) ~= "string" then content = params["content"] end
+        if type(content) ~= "string" then
+            return api_json(400, '{"code":400,"msg":"message required"}')
+        end
+        local sok, text = World.system_chat(content)
+        if not sok then
+            return api_json(400, json.encode({ code = 400, msg = text }))
+        end
+        pcall(function()
+            Audit.record("admin.say", nil, "len=" .. tostring(#text), "http")
+        end)
+        return api_json(200, json.encode({ code = 0, delivered = text }))
+    end
+
+    if action == "save" then
+        World.flush_online_gold()
+        pcall(function() Audit.record("admin.save", nil, "flush online gold", "http") end)
+        return api_json(200, '{"code":0}')
+    end
+
+    return api_json(400, json.encode({ code = 400, msg = "unknown players action: " .. action }))
+end
+
 -- 管理接口分发（POST + hotfix_token 鉴权）
 local function handle_admin(what, req)
     if req["method"] ~= "POST" then
@@ -263,10 +410,16 @@ local function handle_admin(what, req)
     end
 
     if what == "run" then
-        local rok, res = Admin.run(params["cmd"])
+        local cmd = params["cmd"]
+        local rok, res = Admin.run(cmd)
         if not rok then
+            -- 已通过鉴权的违规命令尝试同样留痕（暴力探测/误配置排查用）
+            pcall(function() Audit.record("admin.run.denied", tostring(cmd), tostring(res), "http") end)
             return api_json(400, json.encode({ code = 400, msg = res }))
         end
+        pcall(function()
+            Audit.record("admin.run", tostring(cmd), "exit=" .. tostring(res.code), "http")
+        end)
         return api_json(200, json.encode({
             code = 0,
             stdout = res.stdout,
@@ -284,10 +437,249 @@ local function handle_admin(what, req)
         if not ok_set then
             return api_json(400, json.encode({ code = 400, msg = err_set }))
         end
+        local detail = m == nil and "clear" or ("len=" .. tostring(#m))
+        pcall(function() Audit.record("admin.motd", nil, detail, "http") end)
         return api_json(200, '{"code":0}')
     end
 
+    if what == "backup" then
+        return handle_backup(params)
+    end
+
+    if what == "players" then
+        return handle_players(params)
+    end
+
     return api_json(404, '{"code":404,"msg":"unknown admin action"}')
+end
+
+-- GET 类管理接口的统一鉴权（token 放 query string，便于浏览器/巡检工具直接拉取）
+local function require_get_admin(req)
+    if req["method"] ~= "GET" then
+        return false, api_json(405, '{"code":405,"msg":"GET required"}')
+    end
+    local params = parse_query(req["query"])
+    if not Admin.check_token(params["token"]) then
+        return false, api_json(403, '{"code":403,"msg":"bad token"}')
+    end
+    return true, params
+end
+
+-- GET /api/audit?token=&limit=&format=json|csv ：最近管理操作（新→旧）
+local function handle_audit(req)
+    local ok, params = require_get_admin(req)
+    if not ok then return params end
+
+    local limit = tonumber(params["limit"])
+    if limit == nil or limit ~= limit then limit = 20 end
+    local rows = Audit.list(limit)
+
+    if params["format"] == "csv" then
+        -- csv.encode 自动处理 detail 中的逗号/引号/换行转义
+        local lines = { { "id", "ts", "actor", "action", "target", "detail" } }
+        for i = 1, #rows do
+            local r = rows[i]
+            lines[#lines + 1] = {
+                r["id"], r["ts"], tostring(r["actor"]), tostring(r["action"]),
+                r["target"] ~= nil and tostring(r["target"]) or "",
+                r["detail"] ~= nil and tostring(r["detail"]) or ""
+            }
+        end
+        local cok, csv_body = pcall(function() return csv.encode(lines) end)
+        if not cok then
+            return api_json(500, '{"code":500,"msg":"csv encode failed"}')
+        end
+        return {
+            status = 200,
+            headers = {
+                ["Content-Type"] = "text/csv; charset=utf-8",
+                ["Cache-Control"] = "no-cache",
+                ["Access-Control-Allow-Origin"] = "*"
+            },
+            body = csv_body
+        }
+    end
+
+    return api_json(200, json.encode({ code = 0, count = #rows, list = rows }))
+end
+
+-- GET /api/health ：免鉴权存活/就绪探针（只暴露布尔状态与计数，不含任何敏感信息）
+local function handle_health()
+    local st = World.get_stats()
+
+    local db_mode = "memory"
+    local db_ok = true
+    pcall(function()
+        if DB.has_pool() then
+            db_mode = "mysql"
+            db_ok = DB.is_connected()
+        end
+    end)
+
+    local bready = false
+    pcall(function() bready = Backup.is_ready() end)
+    local lready = false
+    pcall(function() lready = Ledger.is_ready() end)
+    local aready = false
+    pcall(function() aready = Audit.is_ready() end)
+    local rready = false
+    pcall(function() rready = RedisStore.is_ready() end)
+
+    local last_bk = nil
+    pcall(function()
+        local bs = Backup.schedule_status()
+        last_bk = bs["last_ts"]
+    end)
+
+    return api_json(200, json.encode({
+        code = 0,
+        status = "ok",
+        ts = os.time(),
+        uptime_s = st["uptime_s"],
+        online = st["online"],
+        bots = st["bots"],
+        components = {
+            ledger = lready,
+            audit = aready,
+            backup = bready,
+            redis = rready,
+            db_mode = db_mode,
+            db_connected = db_ok
+        },
+        backup_last_ts = last_bk
+    }))
+end
+
+-- GET /api/audit/verify?token= ：从头重放哈希链
+local function handle_audit_verify(req)
+    local ok, deny = require_get_admin(req)
+    if not ok then return deny end
+
+    local vok, count, broken = Audit.verify()
+    return api_json(200, json.encode({
+        code = 0,
+        ok = vok,
+        count = count,
+        broken = broken
+    }))
+end
+
+-- GET /api/admin/logs?token=&lines= ：读文件日志尾部（上限 64KB / 500 行）
+local function handle_admin_logs(req)
+    local ok, params = require_get_admin(req)
+    if not ok then return params end
+
+    local n = tonumber(params["lines"])
+    if n == nil or n ~= n then n = 100 end
+    n = math.floor(n)
+    if n < 1 then n = 1 end
+    if n > 500 then n = 500 end
+
+    if log_path == nil then
+        return api_json(503, '{"code":503,"msg":"file logging disabled"}')
+    end
+
+    local f = io.open(log_path, "rb")
+    if not f then
+        return api_json(200, json.encode({ code = 0, path = log_path, lines = {} }))
+    end
+    -- 只读尾部 64KB：seek 到末尾拿大小，再回退至多 65536 字节
+    local size = tonumber(f:seek("end")) or 0
+    local read_sz = 65536
+    if size < read_sz then read_sz = size end
+    if read_sz > 0 then f:seek("set", size - read_sz) end
+    local content = ""
+    if read_sz > 0 then content = f:read(read_sz) end
+    f:close()
+    if type(content) ~= "string" then content = "" end
+
+    local all = {}
+    for line in string.gmatch(content, "[^\r\n]+") do
+        all[#all + 1] = line
+    end
+    local from = #all - n + 1
+    if from < 1 then from = 1 end
+    local out = {}
+    for i = from, #all do
+        out[#out + 1] = all[i]
+    end
+    return api_json(200, json.encode({ code = 0, path = log_path, count = #out, lines = out }))
+end
+
+-- 配置脱敏导出：键名含敏感词的值一律打码
+local function is_sensitive_key(k)
+    local lk = string.lower(tostring(k))
+    local words = { "password", "secret", "token", "aes_key" }
+    for i = 1, #words do
+        if string.find(lk, words[i], 1, true) ~= nil then return true end
+    end
+    return false
+end
+
+local function mask_table(t)
+    local o = {}
+    for k, v in pairs(t) do
+        if is_sensitive_key(k) then
+            o[k] = "***"
+        elseif type(v) == "table" then
+            o[k] = mask_table(v)
+        else
+            o[k] = v
+        end
+    end
+    return o
+end
+
+-- GET /api/admin/config?token=&format=json|toml|ini ：
+-- json 导出全量脱敏配置；toml/ini 只导标量两层结构（数组/表值跳过）
+local function handle_admin_config(req)
+    local ok, params = require_get_admin(req)
+    if not ok then return params end
+
+    local fmt = params["format"]
+    if fmt == nil or fmt == "" then fmt = "json" end
+
+    if fmt == "json" then
+        local body = json.encode({ code = 0, format = "json", config = mask_table(Config.get()) })
+        return api_json(200, body)
+    end
+
+    if fmt == "toml" or fmt == "ini" then
+        local sections = {
+            "server", "mysql", "ledger", "redis", "webhook", "metrics",
+            "feed", "motd", "admin", "backup", "audit", "log", "game"
+        }
+        local flat = {}
+        local all_cfg = Config.get()
+        for i = 1, #sections do
+            local seg = all_cfg[sections[i]]
+            if type(seg) == "table" then
+                local scalar = {}
+                for k, v in pairs(seg) do
+                    if type(v) ~= "table" then scalar[k] = v end
+                end
+                flat[sections[i]] = mask_table(scalar)
+            end
+        end
+
+        local enc_ok, text = pcall(function()
+            if fmt == "toml" then return toml.encode(flat) else return ini.encode(flat) end
+        end)
+        if not enc_ok or type(text) ~= "string" then
+            return api_json(500, json.encode({ code = 500, msg = fmt .. " encode failed" }))
+        end
+        return {
+            status = 200,
+            headers = {
+                ["Content-Type"] = "text/plain; charset=utf-8",
+                ["Cache-Control"] = "no-cache",
+                ["Access-Control-Allow-Origin"] = "*"
+            },
+            body = text
+        }
+    end
+
+    return api_json(400, '{"code":400,"msg":"format must be json|toml|ini"}')
 end
 
 -- protobuf3 二进制世界快照
@@ -386,6 +778,14 @@ local function handle_api(action, req)
         return api_json(200, body)
     end
 
+    if action == "health" or action == "health/" then
+        -- 存活/就绪探针（GET，免鉴权）
+        if req["method"] ~= "GET" then
+            return api_json(405, '{"code":405,"msg":"GET required"}')
+        end
+        return handle_health()
+    end
+
     if action == "rank.csv" then
         -- 排行榜 CSV 导出（fakelua csv.encode 自动处理逗号/引号转义）
         local params = parse_query(req["query"])
@@ -462,13 +862,42 @@ local function handle_api(action, req)
         return handle_admin("motd", req)
     end
 
+    if action == "admin/backup" then
+        return handle_admin("backup", req)
+    end
+
+    if action == "admin/players" then
+        return handle_admin("players", req)
+    end
+
+    -- 以下为 GET 类管理/审计接口（token 在 query string）
+    if action == "audit" or action == "audit/" then
+        return handle_audit(req)
+    end
+
+    if action == "audit/verify" then
+        return handle_audit_verify(req)
+    end
+
+    if action == "admin/logs" then
+        return handle_admin_logs(req)
+    end
+
+    if action == "admin/config" then
+        return handle_admin_config(req)
+    end
+
     return api_json(404, '{"code":404,"msg":"unknown api"}')
 end
 
-function init(cfg)
+function init(cfg, log_cfg)
     if cfg == nil then cfg = {} end
     local port = cfg["http_port"] or 8080
     web_dir = cfg["web_dir"] or "web"
+
+    if type(log_cfg) == "table" and log_cfg["enabled"] ~= false then
+        log_path = log_cfg["path"] or "data/logs/server.log"
+    end
 
     local srv_cfg = {
         ip = "0.0.0.0",

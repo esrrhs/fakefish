@@ -108,13 +108,15 @@ async function run() {
     if (l1.count !== 1 || l1.list.length !== 1) throw new Error('limit=1 expected single entry');
     const l0 = await getFeed(0);
     if (l0.count !== 1) throw new Error('limit=0 should clamp to 1');
+    // 注意：这些请求之间世界仍在 20Hz 运行，feast（12s 周期）随时可能入队，
+    // 因此只能对【单次响应自身】做钳制自洽断言，不能拿前一次的 total 当固定基线
     const lBad = await getFeed('abc');
-    if (lBad.count !== Math.min(full.total, 20) || lBad.count > 20) {
-        throw new Error('limit=abc expected default clamp 20, count=' + lBad.count);
+    if (lBad.count !== Math.min(lBad.total, 20) || lBad.count > 20) {
+        throw new Error('limit=abc expected default clamp 20, count=' + lBad.count + ' total=' + lBad.total);
     }
     const lHuge = await getFeed(99999);
-    if (lHuge.count !== Math.min(full.total, 100) || lHuge.count > 100) {
-        throw new Error('limit=99999 expected clamp to 100, count=' + lHuge.count);
+    if (lHuge.count !== lHuge.total || lHuge.count > 100) {
+        throw new Error('limit=99999 expected clamp 100 and return all, count=' + lHuge.count + ' total=' + lHuge.total);
     }
     log('PASS: limit 钳制正确（1/0→1/默认20/上限100，capacity=50，total=' + full.total + '）');
 
