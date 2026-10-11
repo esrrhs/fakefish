@@ -138,7 +138,7 @@ jobs:
 
           # Wait for HTTP server to become ready
           READY=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 90); do
             if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
               echo "Server is ready after $i seconds!"
               READY=1
@@ -148,7 +148,7 @@ jobs:
           done
 
           if [ $READY -ne 1 ]; then
-            echo "Server failed to start within 30s. Log output:"
+            echo "Server failed to start within 90s. Log output:"
             cat server.log
             exit 1
           fi
@@ -376,7 +376,7 @@ jobs:
 
           # Wait for HTTP server to become ready
           READY=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 90); do
             if curl -s -f http://127.0.0.1:8080/ > /dev/null 2>&1; then
               echo "Server is ready after $i seconds!"
               READY=1
@@ -386,7 +386,7 @@ jobs:
           done
 
           if [ $READY -ne 1 ]; then
-            echo "Server failed to start within 30s. Log output:"
+            echo "Server failed to start within 90s. Log output:"
             cat server.log
             exit 1
           fi

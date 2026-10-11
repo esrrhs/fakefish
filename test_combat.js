@@ -27,6 +27,69 @@ async function runCombatVerification() {
     let hunter = null;
     let prey = null;
     let foods = [];
+    let zone = null;  // snapshot 下发的当前安全区 {x,y,r,...}，无圈环境为 null
+    let hunterChaseState = "grow";  // "grow"（圈内吃豆）| "strike"（直扑猎物）
+
+    // 点 (x,y) 是否在安全区内（margin 预留边距，收缩中也不贴边）
+    function inZone(x, y, margin) {
+        if (!zone) return true;
+        return Math.hypot(x - zone.x, y - zone.y) < zone.r - margin;
+    }
+
+    // 发育用豆子：优先圈内、并尽量偏向猎物一侧（缩短随后的冲刺距离）；
+    // 圈内暂时无豆则接受任意豆子
+    function pickGrowFood() {
+        if (!hunter || foods.length === 0) return null;
+        let pool = foods.filter((f) => inZone(f.x, f.y, 20));
+        if (pool.length === 0) pool = foods;
+        let best = null;
+        let bestScore = Infinity;
+        for (const f of pool) {
+            const score = Math.hypot(f.x - hunter.x, f.y - hunter.y)
+                + 0.5 * Math.hypot(f.x - prey.x, f.y - prey.y);
+            if (score < bestScore) {
+                bestScore = score;
+                best = f;
+            }
+        }
+        return best;
+    }
+
+    // 猎人移动决策（50ms 一次）：
+    //  - 体型满足吞噬阈值（r >= prey.r*1.15 且 gold 更多，1.05 判定留 10% 余量）
+    //    时直扑猎物；冲刺途中若掉到实际判定线（1.05）以下则放弃，回圈重新发育；
+    //  - 否则在圈内吃豆发育，人先回到圈内；CI 缩圈环境（12s/6s）下站桩猎物会在
+    //    圈外被 zone_dps(20/s) 慢慢耗到 r=15，猎人只要不陪它在圈外掉金即可。
+    function hunterMove() {
+        if (!hunter || !prey) return;
+        let tx, ty;
+        const canStrike = hunter.r >= prey.r * 1.15 && hunter.gold > prey.gold;
+        const stillEatable = hunter.r > prey.r * 1.05 && hunter.gold > prey.gold;
+        const striking = hunterChaseState === "strike";
+        if ((striking && stillEatable) || (!striking && canStrike)) {
+            hunterChaseState = "strike";
+            tx = prey.x;
+            ty = prey.y;
+        } else {
+            hunterChaseState = "grow";
+            if (zone && !inZone(hunter.x, hunter.y, 45)) {
+                // 出圈太远：先回圈心，避免被 20 dps 耗死
+                tx = zone.x;
+                ty = zone.y;
+            } else {
+                const f = pickGrowFood();
+                if (!f) return;
+                tx = f.x;
+                ty = f.y;
+            }
+        }
+        const dx = tx - hunter.x;
+        const dy = ty - hunter.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 1) {
+            wsHunter.send(JSON.stringify({ type: "move", dx: dx / dist, dy: dy / dist }));
+        }
+    }
 
     // Wait for login_ok from both clients
     const loginPromise = new Promise((resolve) => {
@@ -63,6 +126,7 @@ async function runCombatVerification() {
         const d = JSON.parse(m.data);
         if (d.type === "snapshot") {
             if (d.foods) foods = d.foods;
+            if (d.zone) zone = d.zone;
             for (const p of d.players) {
                 if (p.id === hunterId) hunter = p;
                 if (p.id === preyId) prey = p;
@@ -84,73 +148,30 @@ async function runCombatVerification() {
         }
     });
 
-    // 阶段 1：猎人先吃金币球使体型 > 猎物 (100 -> 125, 半径 40.0 -> 42.96 > 40*1.05=42.0)
-    console.log("Phase 1: Hunter collecting pellets to grow bigger...");
-    const pelletChase = setInterval(() => {
-        if (!hunter || foods.length === 0) return;
-        if (hunter.gold >= 125) return;
-
-        // 找最近的金币
-        let nearest = null;
-        let minDist = 999999;
-        for (const f of foods) {
-            const dist = Math.hypot(f.x - hunter.x, f.y - hunter.y);
-            if (dist < minDist) {
-                minDist = dist;
-                nearest = f;
-            }
-        }
-        if (nearest) {
-            const dx = nearest.x - hunter.x;
-            const dy = nearest.y - hunter.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist > 1) {
-                wsHunter.send(JSON.stringify({ type: "move", dx: dx / dist, dy: dy / dist }));
-            }
-        }
-    }, 50);
+    // 阶段 1：猎人在安全区内吃豆发育到 125 gold（半径 40.0 -> 42.96 > 40*1.05=42.0）。
+    // CI 缩圈环境下站在圈外会被 zone_dps 耗金，发育移动必须贴着圈内走。
+    console.log("Phase 1: Hunter collecting pellets inside zone to grow bigger...");
+    const moveTimer = setInterval(hunterMove, 50);
 
     // 等待猎人体型超过猎物 (阈值 125 gold)
     const p1Start = Date.now();
-    while (Date.now() - p1Start < 12000) {
+    while (Date.now() - p1Start < 15000) {
         if (hunter && hunter.gold >= 125) {
             console.log(`Hunter grew to ${hunter.gold} gold (radius: ${hunter.r}) > Prey (${prey ? prey.gold : 100} gold)`);
             break;
         }
         await new Promise(r => setTimeout(r, 100));
     }
-    clearInterval(pelletChase);
 
-    // 阶段 2：猎物保持不动，猎人自适应追击。
-    // 注意：不动的猎物每帧仍会结算碰撞，金币雨（CI 把 feast 调到 12s）的奖励豆若刷在
-    // 猎物半径内会被它自动吃掉、体型反超，直扑策略因此概率性失败。改为：体型不满足
-    // eat_ratio(1.05) 时就近吃豆（含金币雨奖励豆，移动收集比站着等更快），够大再直扑。
-    console.log("Phase 2: Hunter adaptive-chasing Prey (grow if needed, then strike)...");
-    const hunterChase = setInterval(() => {
-        if (!hunter || !prey) return;
-        let tx = prey.x;
-        let ty = prey.y;
-        if (hunter.r <= prey.r * 1.05 && foods.length > 0) {
-            // 体型不足：优先最近的豆
-            let nearest = null;
-            let minDist = 999999;
-            for (const f of foods) {
-                const dd = Math.hypot(f.x - hunter.x, f.y - hunter.y);
-                if (dd < minDist) { minDist = dd; nearest = f; }
-            }
-            if (nearest && minDist > 1) { tx = nearest.x; ty = nearest.y; }
-        }
-        const dx = tx - hunter.x;
-        const dy = ty - hunter.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > 1) {
-            wsHunter.send(JSON.stringify({ type: "move", dx: dx / dist, dy: dy / dist }));
-        }
-    }, 50);
-
+    // 阶段 2：猎物保持不动，猎人体型够就直扑、不够就回圈内吃豆，可反复往返。
+    // 两个失败源都要扛：
+    //  1) 金币雨（CI feast=12s）奖励豆刷在猎物身边会让它暂时变大 → 继续发育；
+    //  2) 缩圈把圈外站桩猎物耗到 r=15 → 此时双方同尺寸永远无法满足 1.05 吞噬比，
+    //     猎人必须保住圈内体型再短促出击。
+    console.log("Phase 2: Hunter zone-aware adaptive chase (strike when big enough)...");
     const p2Start = Date.now();
     let lastLog = Date.now();
-    while (Date.now() - p2Start < 25000) {
+    while (Date.now() - p2Start < 30000) {
         if (eatEvent && diedEvent) {
             console.log("Phase 2 Complete: Hunter devoured Prey successfully!");
             break;
@@ -159,13 +180,14 @@ async function runCombatVerification() {
             lastLog = Date.now();
             if (hunter && prey) {
                 const dist = Math.hypot(hunter.x - prey.x, hunter.y - prey.y).toFixed(1);
-                console.log(`  -> Hunter (${hunter.x}, ${hunter.y}, gold=${hunter.gold}, r=${hunter.r}) chasing Prey (${prey.x}, ${prey.y}, gold=${prey.gold}, r=${prey.r}), dist=${dist}`);
+                const zr = zone ? `zone.r=${Math.round(zone.r)}` : "no-zone";
+                console.log(`  -> [${hunterChaseState}] Hunter (${hunter.x}, ${hunter.y}, gold=${hunter.gold}, r=${hunter.r}) vs Prey (${prey.x}, ${prey.y}, gold=${prey.gold}, r=${prey.r}), dist=${dist}, ${zr}`);
             }
         }
         await new Promise(r => setTimeout(r, 100));
     }
 
-    clearInterval(hunterChase);
+    clearInterval(moveTimer);
     clearInterval(pingTimer);
     wsHunter.close();
     wsPrey.close();
