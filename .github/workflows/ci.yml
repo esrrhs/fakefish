@@ -834,9 +834,6 @@ jobs:
           echo "=== Running Config Export E2E Test ==="
           node test_config_export.js
 
-          echo "=== Running Admin Ops E2E Test ==="
-          node test_admin_ops.js
-
           echo "=== Running Powerup E2E Test ==="
           node test_powerup.js
 
@@ -848,6 +845,11 @@ jobs:
 
           echo "=== Running Split E2E Test ==="
           node test_split.js
+
+          # After the live-world gameplay cases so its one encrypted backup and two-player
+          # connect churn do not perturb the time-sensitive powerup/feast/zone/split sequence.
+          echo "=== Running Admin Ops E2E Test ==="
+          node test_admin_ops.js
 
           echo "=== Running Hotfix E2E Test ==="
           node test_hotfix.js

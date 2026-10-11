@@ -11,6 +11,10 @@ async function runSplitTest() {
     let playerId = null;
     let lastSnap = null;
     let selfEatObserved = false;
+    // 快照观测计数：用于区分「根本没收到含自身的快照（连接/协议问题）」
+    // 与「收到快照但 runner 卡顿导致追不到豆（实时性问题）」，避免再报含糊的 got 0
+    let snapCount = 0;
+    let lastSnapAt = 0;
 
     const loginOk = new Promise((resolve, reject) => {
         ws.addEventListener("message", (m) => {
@@ -41,6 +45,8 @@ async function runSplitTest() {
         const d = JSON.parse(m.data);
         if (d.type === "snapshot") {
             lastSnap = d;
+            snapCount++;
+            lastSnapAt = Date.now();
         } else if (d.type === "eat" && d.eater_id === d.victim_id) {
             selfEatObserved = true;
         }
@@ -67,6 +73,20 @@ async function runSplitTest() {
         return big;
     }
 
+    // 失败现场快照：区分「没收到流 / 自己不在快照 / 豆不足 / runner 卡顿」
+    function diag() {
+        const age = lastSnapAt ? (Date.now() - lastSnapAt) : -1;
+        const cells = ownCells();
+        return "(playerId=" + playerId
+            + ", snaps=" + snapCount
+            + ", snapAgeMs=" + age
+            + ", players=" + (lastSnap ? lastSnap.players.length : "-")
+            + ", foods=" + (lastSnap ? lastSnap.foods.length : "-")
+            + ", selfCells=" + cells.length
+            + ", selfGold=" + ownGold()
+            + ", zoneR=" + (lastSnap && lastSnap.zone ? lastSnap.zone.r : "-") + ")";
+    }
+
     function sendDir(tx, ty) {
         ws.send(JSON.stringify({ type: "move", dx: tx, dy: ty }));
     }
@@ -91,28 +111,62 @@ async function runSplitTest() {
     }
 
     // 1. 吃豆攒金币到 110（初始 100，吃 2 颗即可）
-    console.log("Eating pellets to reach gold 110...");
-    // 成功条件只看金币状态（与合体阶段同一策略）：每轮重选当前最近豆、短预算推进。
-    // 不用「固定坐标 + 8s 墙钟预算」——服务端按固定 dt 推进世界，GitHub 共享 runner
-    // 卡顿时墙钟位移明显偏小，且目标豆被吃会传送、feast 会清空奖励豆；追逐一个
-    // 可能已经消失的点极易误报。45s 总预算覆盖慢帧。
+    // 先等自己稳定出现在快照里：登录成功不代表已收到含自身的广播帧。
+    // 若长时间自身都不进快照，那是连接/广播问题，应明确报错而不是在攒豆处报含糊的 got 0。
+    const tSelf = Date.now();
+    while (ownCells().length === 0 && Date.now() - tSelf < 10000) {
+        await sleep100();
+    }
+    if (ownCells().length === 0) {
+        console.error("FAIL: self never appeared in snapshot after login " + diag());
+        process.exit(1);
+    }
+
+    console.log("Eating pellets to reach gold 110 (staying inside the safe zone)...");
+    // 只追「安全区内侧」的豆。测试/CI 配置下 zone_shrink_interval_s=12s，安全区收缩很快；
+    // 若全图追最近豆，刷在圈外的豆会把细胞引出圈，zone_dps=20/s 持续扣金币——初始 100
+    // 金最快 5s 扣光，半径随之缩到极小、再也吃不到豆，陷入死亡螺旋（这正是 CI 上该用例
+    // 间歇 "got 0"、本地复现 "got 76 + zoneR=735" 的真实根因，与快照流/node 实时性无关）。
+    const CENTER = 1000;
+    const SAFE_MARGIN = 70;    // 目标豆距圆心至少比 zone.r 近这么多（覆盖吃豆半径+滑行惯性）
     const tGather = Date.now();
-    while (ownGold() < 110 && Date.now() - tGather < 45000) {
+    while (ownGold() < 110 && Date.now() - tGather < 60000) {
         const big = ownBig();
         if (!lastSnap || big === null) { await sleep100(); continue; }
-        // 找最近的金币豆
+        const zr = (lastSnap.zone && lastSnap.zone.r) ? lastSnap.zone.r : 1500;
+        const selfD = Math.hypot(big.x - CENTER, big.y - CENTER);
+        // 兜底：贴边（理论上出生点已被钳制在圈内、下方选豆也不出圈）就撤回圆心方向
+        if (selfD > zr - 30) {
+            await driveTo(CENTER, CENTER, Math.max(0, zr - 160), 3);
+            await sleep100();
+            continue;
+        }
+        // 只在安全区内侧选最近豆：保证追豆终点始终在圈内，绝不吃毒
         let near = null, nd = 1e9;
         for (const f of lastSnap.foods) {
+            if (Math.hypot(f.x - CENTER, f.y - CENTER) > zr - SAFE_MARGIN) continue;
             const d = Math.hypot(f.x - big.x, f.y - big.y);
             if (d < nd) { nd = d; near = f; }
         }
-        if (near === null) { await sleep100(); continue; }
+        if (near === null) {
+            // 圈内暂无豆：朝圆心微调并等待豆子刷新/金币雨，绝不向外追圈外豆
+            const inv = selfD > 1 ? 1 / selfD : 0;
+            sendDir((CENTER - big.x) * inv, (CENTER - big.y) * inv);
+            await sleep100();
+            continue;
+        }
         await driveTo(near.x, near.y, 6, 2);
         await sleep100();
     }
     const gatheredGold = ownGold();
     if (gatheredGold < 110) {
-        console.error("FAIL: could not gather gold, got " + gatheredGold);
+        // 区分根因：无快照流 / 自己消失（连接或服务端移除）/ 流正常但追不到豆（runner 实时性）
+        const reason = snapCount === 0
+            ? "no snapshot frames received"
+            : ownCells().length === 0
+                ? "self missing from snapshot"
+                : "could not reach enough pellets in time";
+        console.error("FAIL: could not gather gold, got " + gatheredGold + " — " + reason + " " + diag());
         process.exit(1);
     }
     console.log(`Gold gathered: ${gatheredGold}`);

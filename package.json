@@ -4,7 +4,7 @@
   "description": "FakeFish - 2D PVP game server and web client demo powered by FakeLua",
   "scripts": {
     "test": "npm run test:all",
-    "test:all": "node test_client.js && node test_auth.js && node test_combat.js && node test_api.js && node test_ledger.js && node test_chat_utf8.js && node test_metrics.js && node test_webhook.js && node test_redis.js && node test_feed.js && node test_protobuf.js && node test_http_compress.js && node test_admin.js && node test_audit.js && node test_backup.js && node test_config_export.js && node test_admin_ops.js && node test_powerup.js && node test_feast.js && node test_zone.js && node test_split.js && node test_hotfix.js && node test_bots.js && node test_persist.js",
+    "test:all": "node test_client.js && node test_auth.js && node test_combat.js && node test_api.js && node test_ledger.js && node test_chat_utf8.js && node test_metrics.js && node test_webhook.js && node test_redis.js && node test_feed.js && node test_protobuf.js && node test_http_compress.js && node test_admin.js && node test_audit.js && node test_backup.js && node test_config_export.js && node test_powerup.js && node test_feast.js && node test_zone.js && node test_split.js && node test_admin_ops.js && node test_hotfix.js && node test_bots.js && node test_persist.js",
     "test:client": "node test_client.js",
     "test:auth": "node test_auth.js",
     "test:combat": "node test_combat.js",
