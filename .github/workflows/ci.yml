@@ -767,6 +767,12 @@ jobs:
 
       - name: Run fakefish server & E2E self-test
         shell: msys2 {0}
+        env:
+          # 与上面的就绪窗口同理：Windows 上 fakelua 按上游约定 -O0 构建且 JIT 走 gcc
+          # 子进程，重编译 world(137 函数) + bot(19 函数) 的往返远超 Unix 实测的 6.2-6.8s，
+          # 30s 预算在此必然误报 hotfix_result timeout。仅放宽测试基础设施预算，
+          # 不改任何判定逻辑。test_hotfix.js 已预留该变量。
+          HOTFIX_TIMEOUT_MS: "120000"
         run: |
           set -e
           # libfakelua.dll 等运行期依赖在安装前缀的 bin 下
