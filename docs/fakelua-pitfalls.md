@@ -306,6 +306,20 @@ mysql 连接的泵 `TickMysqlConnection`（native_mysql.cpp 361 行）在 `conn-
 - `test_hotfix.js` 的 world 热更往返本机实测 **6.2-6.8s**（重编译 world 137 函数 + bot 19 函数，
   每文件跑 TCC + GCC 两轮 JIT），超时阈值原为 10s、余量仅 1.5 倍，共享 CI runner 降速即误报。
   已放宽至 30s。
+- **Windows 上 `process.run` 不能用 `cmd.exe /c` 跑带空格的一条命令**（2026-10-12 定位，Windows CI 红灯）：
+  fakelua 的 `QuoteWinArg`（`native_process.cpp:279`）对**每个**参数无条件套一层双引号，
+  拼出的命令行是 `"cmd.exe" "/d" "/c" "echo fakefish-pong"`，`/c` 之后实际是
+  ` "echo fakefish-pong"`（`/c` 与命令串之间有个空格）。
+  cmd 提取命令的「规则二」会看 `/c` 之后的**首字符**是不是引号——首字符是空格，
+  于是前导引号被原样保留、只剥掉尾部引号，整条命令被当成单个文件名，报
+  `'"echo fakefish-pong' is not recognized`，exit=1。
+  **两个直觉修法都无效**：去掉 `/s` 没用（`/s` 的作用恰恰是强制走规则二）；
+  拆成 `["cmd.exe","/d","/c","echo","fakefish-pong"]` 也不行（echo 会把带引号的参数原样打印）。
+  **可行解**：改用 PowerShell（`powershell.exe -NoProfile -NonInteractive -Command "Write-Output ..."`），
+  它走标准 C 运行时 argv 解析，正好与 process.run 的加引号方式匹配；
+  代价是冷启动 1-2s，故 `run_timeout_ms` 从 3000 放宽到 8000。
+  排查提示：这类失败里 `stderr` 是 cmd.exe 自己吐的文案，说明平台分支已选对、
+  `os.getenv("OS")` 判定有效、可执行文件也已成功启动——问题一定在 argv 传递，别再去查平台判定。
 
 ---
 

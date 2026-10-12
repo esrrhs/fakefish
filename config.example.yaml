@@ -60,14 +60,23 @@ motd:
 # process.run 不走 shell、参数完全来自下表（客户端不能附加），同步执行并带超时；
 # 仅适合秒级运维命令。未配置 token 或 enabled:false 时管理接口一律拒绝。
 # argv 支持两种写法：字符串数组=全平台共用；{unix:..., windows:...}=按平台选择
-# （Windows 没有 shell 内建的 echo，须显式给出可执行文件，此处调用 cmd.exe）。
+# Windows 侧为什么不用 cmd.exe /c：
+#   fakelua 的 process.run 在 Windows 上会给【每个】参数无条件套一层双引号，于是 /c 后面
+#   实际是 ` "echo fakefish-pong"`（/c 与命令串之间有个空格）。cmd 提取命令的规则二会看
+#   /c 之后的【首字符】是不是引号——首字符是空格，前导引号就被原样保留、只剥掉尾部引号，
+#   整条命令被当成一个文件名 -> '"echo fakefish-pong' is not recognized。
+#   加 /s 也救不了：/s 的作用就是强制走这条规则二。
+#   拆成多个独立参数同样不行，echo 会把带引号的参数原样打印出来。
+#   PowerShell 走标准 C 运行时 argv 解析，与 process.run 的加引号方式正好匹配，故用之。
 admin:
   enabled: true
-  run_timeout_ms: 3000    # 单命令超时（上限 10000ms），超时杀进程并返回 exit=9
+  # Windows 侧 PowerShell 冷启动约 1-2s，比 Unix 的 echo 慢，阈值相应放宽（上限 10000ms）
+  run_timeout_ms: 8000    # 单命令超时（上限 10000ms），超时杀进程并返回 exit=9
   commands:
     ping:
       unix: ["echo", "fakefish-pong"]
-      windows: ["cmd.exe", "/d", "/s", "/c", "echo fakefish-pong"]
+      windows: ["powershell.exe", "-NoProfile", "-NonInteractive",
+                "-Command", "Write-Output fakefish-pong"]
 
 # 管理操作防篡改审计链（fakelua sqlite + crypto.sha256）：
 # 记录 admin 命令/公告/备份/热更，每条 hash 链接前一条；
