@@ -320,6 +320,14 @@ mysql 连接的泵 `TickMysqlConnection`（native_mysql.cpp 361 行）在 `conn-
   代价是冷启动 1-2s，故 `run_timeout_ms` 从 3000 放宽到 8000。
   排查提示：这类失败里 `stderr` 是 cmd.exe 自己吐的文案，说明平台分支已选对、
   `os.getenv("OS")` 判定有效、可执行文件也已成功启动——问题一定在 argv 传递，别再去查平台判定。
+- **Windows 上 hotfix 重编译的耗时不能用 Unix 基线**（2026-10-12，CI run 38205227815 前一次）：
+  admin ping 修好后 Windows job 一路推进到最后一个套件，停在
+  `[3/4] Combat hotfix applied` 之后 `FAIL: hotfix_result timeout`，恰好卡在 30s 边界。
+  `test_hotfix.js` 的 30s 默认值是按 Unix 定的（本机往返实测 6.2-6.8s）；
+  Windows 上 fakelua 按上游约定 -O0 构建且 JIT 走 gcc 子进程，
+  重编译 world(137 函数) + bot(19 函数) 慢得多，30s 必然误报。
+  `test_hotfix.js` 早已预留 `HOTFIX_TIMEOUT_MS` 变量，Windows job 侧设 `120000` 即可
+  （与同文件就绪窗口放宽到 120s 是同一类做法）。Linux/macOS 保持默认 30s。
 
 ---
 
