@@ -5,7 +5,6 @@
 # 新增 test_*.js 必须登记于此或 e2e-bots.txt，否则 coverage 校验会失败。
 test_client.js
 test_auth.js
-test_guest.js
 test_combat.js
 test_api.js
 test_ledger.js
@@ -24,5 +23,8 @@ test_powerup.js
 test_feast.js
 test_zone.js
 test_split.js
+# 游客会往世界里注入 2 个真实玩家（虽静止不动），故排在时序敏感的
+# combat/powerup/feast/zone/split 之后，与 admin_ops 同处收尾段。
+test_guest.js
 test_admin_ops.js
 test_hotfix.js

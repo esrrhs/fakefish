@@ -154,8 +154,14 @@ async function runCombatVerification() {
     const moveTimer = setInterval(hunterMove, 50);
 
     // 等待猎人体型超过猎物 (阈值 125 gold)
+    // Windows 上 fakelua 按上游约定 -O0 构建、JIT 走 gcc 子进程，加上共享 runner 降速，
+    // 吃豆发育明显慢于 Unix，固定 15s 会来不及达到 125 就进入 Phase 2，于是全程停在
+    // grow 模式、永远不 strike，最终 30s 追逐超时。与 HOTFIX_TIMEOUT_MS 同一套路：
+    // 超时预算由环境变量给出，判定逻辑本身不变。
+    const P1_MS = Number(process.env.COMBAT_PHASE1_MS || 15000);
+    const P2_MS = Number(process.env.COMBAT_PHASE2_MS || 30000);
     const p1Start = Date.now();
-    while (Date.now() - p1Start < 15000) {
+    while (Date.now() - p1Start < P1_MS) {
         if (hunter && hunter.gold >= 125) {
             console.log(`Hunter grew to ${hunter.gold} gold (radius: ${hunter.r}) > Prey (${prey ? prey.gold : 100} gold)`);
             break;
@@ -171,7 +177,7 @@ async function runCombatVerification() {
     console.log("Phase 2: Hunter zone-aware adaptive chase (strike when big enough)...");
     const p2Start = Date.now();
     let lastLog = Date.now();
-    while (Date.now() - p2Start < 30000) {
+    while (Date.now() - p2Start < P2_MS) {
         if (eatEvent && diedEvent) {
             console.log("Phase 2 Complete: Hunter devoured Prey successfully!");
             break;

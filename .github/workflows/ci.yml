@@ -607,6 +607,11 @@ jobs:
           # 30s 预算在此必然误报 hotfix_result timeout。仅放宽测试基础设施预算，
           # 不改任何判定逻辑。test_hotfix.js 已预留该变量。
           HOTFIX_TIMEOUT_MS: "120000"
+          # 同理：Windows 上吃豆发育慢，combat 的 Phase1(默认 15s)/Phase2(默认 30s)
+          # 固定预算不够，Hunter 来不及长到 125 就进入追逐、全程停在 grow 模式而超时。
+          # test_combat.js 已预留这两个变量，判定逻辑不变。
+          COMBAT_PHASE1_MS: "30000"
+          COMBAT_PHASE2_MS: "60000"
         run: |
           set -e
           # libfakelua.dll 等运行期依赖在安装前缀的 bin 下
