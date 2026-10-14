@@ -593,7 +593,7 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 18. **M18**：运维安全后台——`crypto.sha256`+sqlite 防篡改审计链（外部注入/改动 verify 必检出）、`compress.zstd`+AES-128-CBC+base64+CRC32+uuid+PCG 加密备份信封（字节级篡改检出、restore 回滚 MOTD、自动剪枝）、`log` 文件落盘与尾部拉取、`toml`/`ini` 脱敏配置导出；HTTP 入口异常兜底不杀进程、新模块支持热更：**本地 23/23 已通过；三平台 CI 已通过**（run `38208038847`）
 19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；三平台 CI 已通过**（run `38208038847`）
 20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**已通过**（三平台 CI 并行，run `38208038847`：Ubuntu 14m17s / macOS 21m01s / Windows 19m16s 全绿）
-21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**本地已验证**（清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致、覆盖校验通过、`ci.yml` 三 job 各恰 2 次清单调用）；**三平台 CI 待推送后确认**
+21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**已通过**（run `38589359869`：三平台各执行 24 个用例、main / bots 两个 suite 均 passed、覆盖门禁 OK；本地清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致，`ci.yml` 三 job 各恰 2 次清单调用）
 
 ---
 
