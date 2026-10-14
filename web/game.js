@@ -11,7 +11,7 @@
     let powerups = []; // [ { x, y, kind } ]
     let camera = { x: 1000, y: 1000 };
     let isConnected = false;
-    let authMode = "login"; // 'login' or 'register'
+    let authMode = "login"; // 'login' / 'register' / 'guest'
     let zone = null; // { x, y, r, phase, holding, next_in }
     let serverKickReason = ""; // 服务端 error 帧携带的原因（如同账号在别处登录），随后连接会被断开
 
@@ -24,6 +24,7 @@
     const authUsernameInput = document.getElementById("auth-username");
     const authPasswordInput = document.getElementById("auth-password");
     const btnSubmit = document.getElementById("btn-submit");
+    const btnGuest = document.getElementById("btn-guest");
     const authError = document.getElementById("auth-error");
 
     const hud = document.getElementById("hud");
@@ -101,6 +102,8 @@
     });
 
     function handleAuthSubmit() {
+        if (authMode === "guest") return;
+
         const username = authUsernameInput.value.trim();
         const password = authPasswordInput.value.trim();
 
@@ -179,12 +182,20 @@
     }
 
     function sendAuth(username, password) {
-        const payload = {
-            type: authMode,
-            username: username,
-            password: password
-        };
+        // 游客模式：昵称与账号全部由服务端生成，客户端不传任何身份信息
+        const payload = authMode === "guest"
+            ? { type: "guest" }
+            : { type: authMode, username: username, password: password };
         ws.send(JSON.stringify(payload));
+    }
+
+    // 以游客身份进场（服务端昵称前缀由 guest.prefix 配置）
+    function enterAsGuest() {
+        authMode = "guest";
+        authError.classList.add("hidden");
+        btnSubmit.disabled = true;
+        btnSubmit.innerText = "正在进入...";
+        connectWebSocket(null, null);
     }
 
     // 协议消息处理
@@ -201,6 +212,8 @@
                 leaderboard.classList.remove("hidden");
                 chatBox.classList.remove("hidden");
                 chatOpen = false;
+                // 昵称一律以服务端为准：游客的名字由服务端生成，本地没有输入过
+                myName = msg.name || myName;
                 hudName.innerText = myName;
                 showToast(`欢迎进入竞技场，${myName}！`, "success");
                 requestRank();
@@ -975,6 +988,36 @@
         B = (B < 255) ? B : 255;
         return "#" + ((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
     }
+
+    // 登录框里的「游客试玩」
+    btnGuest.addEventListener("click", () => {
+        authModal.classList.add("hidden");
+        enterAsGuest();
+    });
+
+    // ---- 启动引导 ----
+    // 先同步隐藏登录框，避免自动游客进场时登录界面闪一下；拿不到 /api/guest
+    // （旧版服务端或请求失败）时回退到原来的登录/注册流程。
+    authModal.classList.add("hidden");
+
+    function bootstrap() {
+        const forceLogin = new URLSearchParams(location.search).get("login") === "1";
+        fetch("/api/guest")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((cfg) => {
+                const guestOn = !!(cfg && cfg.enabled);
+                if (guestOn) btnGuest.classList.remove("hidden");
+                if (guestOn && cfg.auto_enter && !forceLogin) {
+                    enterAsGuest();
+                    return;
+                }
+                authModal.classList.remove("hidden");
+            })
+            .catch(() => {
+                authModal.classList.remove("hidden");
+            });
+    }
+    bootstrap();
 
     // 启动动画循环
     renderLoop();

@@ -3,6 +3,50 @@ package "Auth"
 -- 旧版固定盐（仅用于识别/校验历史账号哈希；新注册一律使用每账号随机盐）
 local LEGACY_SALT = "fakefish_salt_2026"
 
+-- 游客登录（免注册直接进场），由 main 在启动时用 guest 配置段初始化一次。
+-- P1-3：模块级可变标量一律 nil 声明、在 init() 里赋运行时值，否则全常量赋值
+-- 会被推断成 const，后续赋值点直接编译失败。
+local guest_enabled = nil
+local guest_auto_enter = nil
+local guest_prefix = nil
+-- 独立 PCG 流：游客昵称后缀。:int() 推进的是 NativeObject 内部状态，
+-- 不写模块级 local，因此在 WS recv 回调上下文里调用也是安全的（P1-6）。
+local guest_rng = nil
+
+-- 游客配置初始化（main 启动时调用；绝不能在 WS 回调上下文中执行）
+function init(cfg)
+    guest_enabled = false
+    guest_auto_enter = false
+    guest_prefix = "游客"
+
+    if cfg ~= nil then
+        local e = cfg["enabled"]
+        if e == true or e == "true" then guest_enabled = true end
+        local a = cfg["auto_enter"]
+        if a == true or a == "true" then guest_auto_enter = true end
+        local p = cfg["prefix"]
+        if p ~= nil and type_of(p) == "string" and #p > 0 then
+            guest_prefix = p
+        end
+    end
+
+    guest_rng = random.new(os.time() + 12345)
+
+    local state = "disabled"
+    if guest_enabled then state = "enabled" end
+    print("[Auth] guest login " .. state .. " (auto_enter=" .. tostring(guest_auto_enter)
+          .. ", prefix=" .. guest_prefix .. ")")
+end
+
+-- 供 HTTP GET /api/guest 暴露给前端（仅这三项开关，不含任何敏感信息）
+function guest_info()
+    return {
+        enabled = guest_enabled,
+        auto_enter = guest_auto_enter,
+        prefix = guest_prefix
+    }
+end
+
 -- 哈希存储格式（v2，随机盐）：
 --   "v2:<salt>:<sha256(salt .. ':' .. password)>"
 -- salt 取 crypto.uuid()（RFC4122 v4，只含 hex 与 '-'，不含 ':'，解析无歧义）
@@ -63,6 +107,8 @@ local function finish_login(connid, acc)
     local login_ok = {
         type = "login_ok",
         player_id = p.id,
+        -- 游客昵称由服务端生成，前端必须用它而不是自己输入的（游客没有输入框）
+        name = acc.username,
         gold = World.player_total_gold(p),
         map = World.get_map_info()
     }
@@ -119,6 +165,36 @@ function begin_register(connid, username, password)
         username = username,
         new_hash = new_hash
     })
+end
+
+-- 游客入口（WS recv 回调中调用）：免注册直接进场。
+-- 游客账号只在内存表创建：不写 MySQL、不进历史排行榜，断开即随账号一起释放，
+-- 因此公网部署不会被游客刷爆 accounts 表。
+-- 昵称冲突时用同一 PCG 流换号重试；刻意不做自增序号——那需要写模块级 local，
+-- 在回调上下文里会静默失效（P1-6）。
+function begin_guest(connid)
+    if not guest_enabled then
+        World.enqueue_response(connid, { type = "login_fail", reason = "游客登录已关闭，请先注册账号" })
+        return
+    end
+
+    local name = nil
+    for i = 1, 50 do
+        local cand = guest_prefix .. tostring(guest_rng:int(1000, 9999))
+        if DB.memory_account(cand) == nil then
+            name = cand
+            break
+        end
+    end
+    if name == nil then
+        World.enqueue_response(connid, { type = "login_fail", reason = "游客名额已满，请稍后再试" })
+        return
+    end
+
+    local initial = World.initial_gold_value()
+    local acc = DB.create_memory_account(name, "", initial)
+    acc.is_guest = true
+    finish_login(connid, acc)
 end
 
 -- 登录入口（WS recv 回调中调用）：

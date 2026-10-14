@@ -56,6 +56,10 @@ function handle_message(connid, msg)
     elseif mtype == "login" then
         Auth.begin_login(connid, msg["username"], msg["password"])
 
+    elseif mtype == "guest" then
+        -- 游客免注册进场（昵称/账号全由服务端生成，不接收任何客户端输入）
+        Auth.begin_guest(connid)
+
     elseif mtype == "move" then
         local dx = msg["dx"]
         local dy = msg["dy"]

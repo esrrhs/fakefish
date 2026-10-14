@@ -786,6 +786,20 @@ local function handle_api(action, req)
         return handle_health()
     end
 
+    if action == "guest" or action == "guest/" then
+        -- GET /api/guest ：免鉴权，前端据此决定是自动以游客进场还是显示登录框
+        if req["method"] ~= "GET" then
+            return api_json(405, '{"code":405,"msg":"GET required"}')
+        end
+        local g = Auth.guest_info()
+        return api_json(200, json.encode({
+            code = 0,
+            enabled = g["enabled"] == true,
+            auto_enter = g["auto_enter"] == true,
+            prefix = tostring(g["prefix"])
+        }))
+    end
+
     if action == "rank.csv" then
         -- 排行榜 CSV 导出（fakelua csv.encode 自动处理逗号/引号转义）
         local params = parse_query(req["query"])

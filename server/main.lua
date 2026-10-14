@@ -46,6 +46,9 @@ function start(config_path)
         end
     end
 
+    -- 1.8 游客登录开关（需在 WS 服务启动前就绪：Auth.begin_guest 读它）
+    Auth.init(all_cfg["guest"])
+
     -- 2. 初始化持久层
     DB.init(mysql_cfg)
 

@@ -243,6 +243,9 @@ function update_gold(username, account_id, gold)
         if acc.best_gold == nil or gold > acc.best_gold then
             acc.best_gold = gold
         end
+        -- 游客账号在库里没有对应行，UPDATE 是纯浪费：公网下大量游客会白白占满
+        -- pool_size=2 的连接池，把注册用户的写库也拖慢。只更新内存即可。
+        if acc.is_guest == true then return end
     end
 
     if pool ~= nil then
@@ -274,6 +277,7 @@ function add_kill(username)
     local acc = in_memory_accounts[username]
     if acc ~= nil then
         acc.kills = (acc.kills or 0) + 1
+        if acc.is_guest == true then return end
     end
 
     if pool ~= nil then
@@ -291,6 +295,7 @@ function add_death(username)
     local acc = in_memory_accounts[username]
     if acc ~= nil then
         acc.deaths = (acc.deaths or 0) + 1
+        if acc.is_guest == true then return end
     end
 
     if pool ~= nil then
@@ -309,11 +314,15 @@ end
 local function sort_top(limit)
     local items = {}
     for _, acc in pairs(in_memory_accounts) do
-        table.insert(items, {
-            name = acc.username,
-            best_gold = acc.best_gold or acc.gold or 0,
-            kills = acc.kills or 0
-        })
+        -- 游客不进历史榜：否则无 MySQL（内存榜）时大量游客会把榜刷满，
+        -- 与「有 MySQL 时游客不落库所以不上榜」的行为保持一致。
+        if acc.is_guest ~= true then
+            table.insert(items, {
+                name = acc.username,
+                best_gold = acc.best_gold or acc.gold or 0,
+                kills = acc.kills or 0
+            })
+        end
     end
 
     local sorted = {}

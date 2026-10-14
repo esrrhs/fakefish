@@ -515,6 +515,27 @@ body, html {
     box-shadow: 0 6px 16px rgba(37, 99, 235, 0.6);
 }
 
+/* 游客试玩：次要按钮，视觉权重低于主按钮 */
+.guest-btn {
+    width: 100%;
+    margin-top: 10px;
+    background: transparent;
+    color: #94a3b8;
+    border: 1px dashed #475569;
+    padding: 10px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.guest-btn:hover {
+    color: #e2e8f0;
+    border-color: #94a3b8;
+    background: rgba(148, 163, 184, 0.08);
+}
+
 .guide-tip {
     margin-top: 20px;
     padding-top: 14px;

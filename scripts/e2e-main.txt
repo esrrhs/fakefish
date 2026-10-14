@@ -5,6 +5,7 @@
 # 新增 test_*.js 必须登记于此或 e2e-bots.txt，否则 coverage 校验会失败。
 test_client.js
 test_auth.js
+test_guest.js
 test_combat.js
 test_api.js
 test_ledger.js
