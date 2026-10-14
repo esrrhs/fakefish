@@ -581,6 +581,7 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 - [x] **游客不进历史榜**：`sort_top` 排除 `is_guest`。有 MySQL 时游客不落库自然不上榜；无 MySQL 走内存榜时也一并排除，保证两种部署形态下排行榜表现一致，不会被游客刷满
 - [x] **前端打开即玩**：新增免鉴权 `GET /api/guest` 暴露 `{enabled, auto_enter, prefix}`，前端据此决定自动以游客进场还是显示登录框；登录框先同步隐藏（避免自动进场时闪一下），`?login=1` 可唤出登录/注册。拿不到该接口（旧服务端）时回退到原有登录流程
 - [x] **E2E `test_guest.js`**：覆盖进场成功、昵称前缀与唯一性、确实出现在世界快照、不进历史榜、游客名不可被注册占用（`is_valid_username` 只接受 `[%w_]`，中文名天然被拒）
+- [x] **Windows combat 超时预算（连带修复）**：游客用例在 Windows 上 10/10 全过（中文昵称没问题），红灯挂在 `test_combat.js`——Phase 1 的 15s 内 Hunter 只长到 `gold=115`（阈值 125），Phase 2 便全程停在 grow 模式、从不 strike，dist 稳定在 250 直到 30s 超时。Windows 上 fakelua 是 `-O0` 构建且走 gcc 子进程，吃豆发育明显慢于 Unix，固定预算本就临界。超时改由 `COMBAT_PHASE1_MS` / `COMBAT_PHASE2_MS` 给出（默认 15000/30000 不变，Windows 放宽到 30000/60000），判定逻辑不动；并把 `test_guest.js` 从 combat 之前移到活世界用例之后——游客会往世界注入真实玩家，不该排在时序敏感的用例前面
 
 > **实现注意**：`begin_guest` 运行在 WS `recv` 回调上下文，按 P1-6 不能写模块级 local，因此昵称生成只用 PCG 随机流（`random.new` 的 NativeObject 内部状态）+ 撞号重试，**刻意不做自增序号**——那需要写模块级变量，在回调里会静默失效。
 
@@ -607,7 +608,7 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；三平台 CI 已通过**（run `38208038847`）
 20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**已通过**（三平台 CI 并行，run `38208038847`：Ubuntu 14m17s / macOS 21m01s / Windows 19m16s 全绿）
 21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**已通过**（run `38589359869`：三平台各执行 24 个用例、main / bots 两个 suite 均 passed、覆盖门禁 OK；本地清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致，`ci.yml` 三 job 各恰 2 次清单调用）
-22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 纯内存账号（不写 MySQL、不进历史榜）+ 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）：**本地已验证**（`test_guest.js` 10/10；前端脚本级冒烟两种进入场景均通过；test_client / auth / api / combat 回归全过）；**三平台 CI 待推送后确认**
+22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 纯内存账号（不写 MySQL、不进历史榜）+ 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）：**已通过**（run `38605308316`：三平台各执行 25 个用例全绿，Windows 侧 `test_guest` 10/10 且 combat Phase 2 成功；本地 `test_guest.js` 10/10、前端脚本级冒烟两种进入场景、test_client / auth / api / combat 回归全过）
 
 ---
 
