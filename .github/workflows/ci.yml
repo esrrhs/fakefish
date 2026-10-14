@@ -11,7 +11,8 @@ jobs:
   test-linux:
     name: Build & Test (Ubuntu)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 实测约 14m。留到 45m 是为了 fakelua 缓存失效（需现场编译 fakelua）时不误判超时。
+    timeout-minutes: 45
 
     services:
       mysql:
@@ -50,6 +51,11 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           for f in web/*.js test_*.js; do node --check "$f"; done
+
+      # 秒级门禁：双向校验 test_*.js 与 scripts/e2e-*.txt 清单一致，
+      # 防止新增用例忘记登记——未登记的用例永远不会在 CI 里被执行。
+      - name: Verify E2E suite coverage
+        run: bash scripts/check_e2e_coverage.sh
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -155,96 +161,8 @@ jobs:
             exit 1
           fi
 
-          # Run client communication test
-          echo "=== Running WebSocket Client E2E Test ==="
-          node test_client.js
-
-          # Run auth/session robustness test (malformed packets, duplicate-session kick)
-          echo "=== Running Auth & Session E2E Test ==="
-          node test_auth.js
-
-          # Run full combat and eating verification test (bot-free world)
-          echo "=== Running Combat E2E Test ==="
-          node test_combat.js
-
-          # Run HTTP JSON API test (rank/stats/traversal, rank.csv, events, bot-free world)
-          echo "=== Running HTTP API E2E Test ==="
-          node test_api.js
-
-          # Run SQLite event ledger test (enter/feast records, /api/events)
-          echo "=== Running Ledger E2E Test ==="
-          node test_ledger.js
-
-          # Run UTF-8 chat truncation test (character-count limit)
-          echo "=== Running Chat UTF-8 E2E Test ==="
-          node test_chat_utf8.js
-
-          # Run UDP metrics push test (register/push/unregister on :8092)
-          echo "=== Running Metrics UDP E2E Test ==="
-          node test_metrics.js
-
-          # Run outbound webhook test (spawns isolated child server + local receiver)
-          echo "=== Running Webhook E2E Test ==="
-          node test_webhook.js
-
-          # Run Redis ZSET mirror + cross-server chat test (spawns isolated child; SKIP without redis)
-          echo "=== Running Redis E2E Test ==="
-          node test_redis.js
-
-          # Run in-memory event feed test (container.deque, event bus, hotfix persistence)
-          echo "=== Running Feed E2E Test ==="
-          node test_feed.js
-
-          # Run protobuf snapshot + serialize/base91 selftest E2E test
-          echo "=== Running Protobuf E2E Test ==="
-          node test_protobuf.js
-
-          # Run HTTP gzip content-negotiation E2E test
-          echo "=== Running HTTP Compression E2E Test ==="
-          node test_http_compress.js
-
-          # Run admin API E2E test (process.run whitelist, MOTD io persistence)
-          echo "=== Running Admin API E2E Test ==="
-          node test_admin.js
-
-          # Run tamper-evident audit chain E2E (sqlite + crypto.sha256; sqlite3 CLI required)
-          echo "=== Running Audit Chain E2E Test ==="
-          node test_audit.js
-
-          # Run encrypted world backup E2E (compress.zstd + crypto AES-CBC/base64/crc32/uuid)
-          echo "=== Running Encrypted Backup E2E Test ==="
-          node test_backup.js
-
-          # Run masked config export E2E (json/toml/ini)
-          echo "=== Running Config Export E2E Test ==="
-          node test_config_export.js
-
-          # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
-          echo "=== Running Powerup E2E Test ==="
-          node test_powerup.js
-
-          # Run feast gold-rain event test (feast interval sed-ed to 12s)
-          echo "=== Running Feast E2E Test ==="
-          node test_feast.js
-
-          # Run shrinking safe-zone test (shrink/hold cycle sed-ed to 12s/6s)
-          echo "=== Running Zone E2E Test ==="
-          node test_zone.js
-
-          # Run split/merge test (bot-free world, default merge cooldown)
-          echo "=== Running Split E2E Test ==="
-          node test_split.js
-
-          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv,
-          # scheduled backup). Kept after the live-world gameplay cases so its one encrypted
-          # backup and two-player connect churn do not perturb the time-sensitive
-          # powerup/feast/zone/split sequence on oversubscribed shared runners.
-          echo "=== Running Admin Ops E2E Test ==="
-          node test_admin_ops.js
-
-          # Run hotfix test (rewrites server/combat.lua temporarily, restored at end)
-          echo "=== Running Hotfix E2E Test ==="
-          node test_hotfix.js
+          # 用例清单见 scripts/e2e-main.txt（三平台共用唯一真源；scripts/check_e2e_coverage.sh 门禁防漏登）
+          bash scripts/run_e2e_suite.sh scripts/e2e-main.txt
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
@@ -266,13 +184,9 @@ jobs:
             exit 1
           fi
 
-          # Run bots and persistent rank test
-          echo "=== Running Bots & Rank E2E Test ==="
-          node test_bots.js
+          # 用例清单见 scripts/e2e-bots.txt（三平台共用唯一真源；scripts/check_e2e_coverage.sh 门禁防漏登）
+          bash scripts/run_e2e_suite.sh scripts/e2e-bots.txt
 
-          # Run cross-restart persistence test (spawns its own server instance on 18080/18081)
-          echo "=== Running Persistence (restart login) E2E Test ==="
-          node test_persist.js
 
           # Kill server
           kill $SERVER_PID || true
@@ -296,7 +210,8 @@ jobs:
   test-macos:
     name: Build & Test (macOS)
     runs-on: macos-latest
-    timeout-minutes: 30
+    # 实测约 21m，原 30m 上限余量不足；macOS runner 较慢且 fakelua 缓存失效时需现场编译。
+    timeout-minutes: 45
 
     steps:
       - name: Checkout fakefish
@@ -310,6 +225,11 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           for f in web/*.js test_*.js; do node --check "$f"; done
+
+      # 秒级门禁：双向校验 test_*.js 与 scripts/e2e-*.txt 清单一致，
+      # 防止新增用例忘记登记——未登记的用例永远不会在 CI 里被执行。
+      - name: Verify E2E suite coverage
+        run: bash scripts/check_e2e_coverage.sh
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -412,96 +332,8 @@ jobs:
             exit 1
           fi
 
-          # Run client communication test
-          echo "=== Running WebSocket Client E2E Test ==="
-          node test_client.js
-
-          # Run auth/session robustness test (malformed packets, duplicate-session kick)
-          echo "=== Running Auth & Session E2E Test ==="
-          node test_auth.js
-
-          # Run full combat and eating verification test (bot-free world)
-          echo "=== Running Combat E2E Test ==="
-          node test_combat.js
-
-          # Run HTTP JSON API test (rank/stats/traversal, rank.csv, events, bot-free world)
-          echo "=== Running HTTP API E2E Test ==="
-          node test_api.js
-
-          # Run SQLite event ledger test (enter/feast records, /api/events)
-          echo "=== Running Ledger E2E Test ==="
-          node test_ledger.js
-
-          # Run UTF-8 chat truncation test (character-count limit)
-          echo "=== Running Chat UTF-8 E2E Test ==="
-          node test_chat_utf8.js
-
-          # Run UDP metrics push test (register/push/unregister on :8092)
-          echo "=== Running Metrics UDP E2E Test ==="
-          node test_metrics.js
-
-          # Run outbound webhook test (spawns isolated child server + local receiver)
-          echo "=== Running Webhook E2E Test ==="
-          node test_webhook.js
-
-          # Run Redis ZSET mirror + cross-server chat test (spawns isolated child; SKIP without redis)
-          echo "=== Running Redis E2E Test ==="
-          node test_redis.js
-
-          # Run in-memory event feed test (container.deque, event bus, hotfix persistence)
-          echo "=== Running Feed E2E Test ==="
-          node test_feed.js
-
-          # Run protobuf snapshot + serialize/base91 selftest E2E test
-          echo "=== Running Protobuf E2E Test ==="
-          node test_protobuf.js
-
-          # Run HTTP gzip content-negotiation E2E test
-          echo "=== Running HTTP Compression E2E Test ==="
-          node test_http_compress.js
-
-          # Run admin API E2E test (process.run whitelist, MOTD io persistence)
-          echo "=== Running Admin API E2E Test ==="
-          node test_admin.js
-
-          # Run tamper-evident audit chain E2E (sqlite + crypto.sha256; sqlite3 CLI required)
-          echo "=== Running Audit Chain E2E Test ==="
-          node test_audit.js
-
-          # Run encrypted world backup E2E (compress.zstd + crypto AES-CBC/base64/crc32/uuid)
-          echo "=== Running Encrypted Backup E2E Test ==="
-          node test_backup.js
-
-          # Run masked config export E2E (json/toml/ini)
-          echo "=== Running Config Export E2E Test ==="
-          node test_config_export.js
-
-          # Run powerup spawn/pickup test (bot-free world, deterministic chasing)
-          echo "=== Running Powerup E2E Test ==="
-          node test_powerup.js
-
-          # Run feast gold-rain event test (feast interval sed-ed to 12s)
-          echo "=== Running Feast E2E Test ==="
-          node test_feast.js
-
-          # Run shrinking safe-zone test (shrink/hold cycle sed-ed to 12s/6s)
-          echo "=== Running Zone E2E Test ==="
-          node test_zone.js
-
-          # Run split/merge test (bot-free world, default merge cooldown)
-          echo "=== Running Split E2E Test ==="
-          node test_split.js
-
-          # Run admin ops E2E (health probe, online player list/kick/say/save, audit csv,
-          # scheduled backup). Kept after the live-world gameplay cases so its one encrypted
-          # backup and two-player connect churn do not perturb the time-sensitive
-          # powerup/feast/zone/split sequence on oversubscribed shared runners.
-          echo "=== Running Admin Ops E2E Test ==="
-          node test_admin_ops.js
-
-          # Run hotfix test (rewrites server/combat.lua temporarily, restored at end)
-          echo "=== Running Hotfix E2E Test ==="
-          node test_hotfix.js
+          # 用例清单见 scripts/e2e-main.txt（三平台共用唯一真源；scripts/check_e2e_coverage.sh 门禁防漏登）
+          bash scripts/run_e2e_suite.sh scripts/e2e-main.txt
 
           # Kill server, restart with bots enabled for the bots/rank test
           kill $SERVER_PID || true
@@ -523,13 +355,9 @@ jobs:
             exit 1
           fi
 
-          # Run bots and persistent rank test
-          echo "=== Running Bots & Rank E2E Test ==="
-          node test_bots.js
+          # 用例清单见 scripts/e2e-bots.txt（三平台共用唯一真源；scripts/check_e2e_coverage.sh 门禁防漏登）
+          bash scripts/run_e2e_suite.sh scripts/e2e-bots.txt
 
-          # Run cross-restart persistence test (spawns its own server instance on 18080/18081)
-          echo "=== Running Persistence (restart login) E2E Test ==="
-          node test_persist.js
 
           # Kill server
           kill $SERVER_PID || true
@@ -699,6 +527,12 @@ jobs:
         run: |
           for f in web/*.js test_*.js; do node --check "$f"; done
 
+      # 秒级门禁：双向校验 test_*.js 与 scripts/e2e-*.txt 清单一致，
+      # 防止新增用例忘记登记——未登记的用例永远不会在 CI 里被执行。
+      - name: Verify E2E suite coverage
+        shell: msys2 {0}
+        run: bash scripts/check_e2e_coverage.sh
+
       - name: Cache CPM/ccache
         uses: actions/cache@v4
         with:
@@ -801,73 +635,8 @@ jobs:
             exit 1
           fi
 
-          echo "=== Running WebSocket Client E2E Test ==="
-          node test_client.js
-
-          echo "=== Running Auth & Session E2E Test ==="
-          node test_auth.js
-
-          echo "=== Running Combat E2E Test ==="
-          node test_combat.js
-
-          echo "=== Running HTTP API E2E Test ==="
-          node test_api.js
-
-          echo "=== Running Ledger E2E Test ==="
-          node test_ledger.js
-
-          echo "=== Running Chat UTF-8 E2E Test ==="
-          node test_chat_utf8.js
-
-          echo "=== Running Metrics UDP E2E Test ==="
-          node test_metrics.js
-
-          echo "=== Running Webhook E2E Test ==="
-          node test_webhook.js
-
-          echo "=== Running Redis E2E Test ==="
-          node test_redis.js
-
-          echo "=== Running Feed E2E Test ==="
-          node test_feed.js
-
-          echo "=== Running Protobuf E2E Test ==="
-          node test_protobuf.js
-
-          echo "=== Running HTTP Compression E2E Test ==="
-          node test_http_compress.js
-
-          echo "=== Running Admin API E2E Test ==="
-          node test_admin.js
-
-          echo "=== Running Audit Chain E2E Test ==="
-          node test_audit.js
-
-          echo "=== Running Encrypted Backup E2E Test ==="
-          node test_backup.js
-
-          echo "=== Running Config Export E2E Test ==="
-          node test_config_export.js
-
-          echo "=== Running Powerup E2E Test ==="
-          node test_powerup.js
-
-          echo "=== Running Feast E2E Test ==="
-          node test_feast.js
-
-          echo "=== Running Zone E2E Test ==="
-          node test_zone.js
-
-          echo "=== Running Split E2E Test ==="
-          node test_split.js
-
-          # After the live-world gameplay cases so its one encrypted backup and two-player
-          # connect churn do not perturb the time-sensitive powerup/feast/zone/split sequence.
-          echo "=== Running Admin Ops E2E Test ==="
-          node test_admin_ops.js
-
-          echo "=== Running Hotfix E2E Test ==="
-          node test_hotfix.js
+          # 用例清单见 scripts/e2e-main.txt（三平台共用唯一真源；scripts/check_e2e_coverage.sh 门禁防漏登）
+          bash scripts/run_e2e_suite.sh scripts/e2e-main.txt
 
           # MSYS kill 对原生 Windows 进程不可靠，统一用 taskkill 树杀
           taskkill //F //IM fakefish.exe //T 2>/dev/null || true
@@ -888,11 +657,9 @@ jobs:
             exit 1
           fi
 
-          echo "=== Running Bots & Rank E2E Test ==="
-          node test_bots.js
+          # 用例清单见 scripts/e2e-bots.txt（三平台共用唯一真源；scripts/check_e2e_coverage.sh 门禁防漏登）
+          bash scripts/run_e2e_suite.sh scripts/e2e-bots.txt
 
-          echo "=== Running Persistence (restart login) E2E Test ==="
-          node test_persist.js
 
       - name: Dump server log on failure
         if: failure()

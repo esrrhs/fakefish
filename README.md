@@ -135,7 +135,13 @@
 | `http_static` | 托管前端静态页 + HTTP JSON API（排行/统计/feed/pbf/motd/admin），gzip 协商压缩 |
 | `feed` | `container.deque` 有界内存事件流（进场/击杀/金币雨），订阅事件总线，热更不丢 |
 | `motd` | 登录公告：`io.open` 读写 `data/motd.txt`（写 `.tmp` + `os.rename` 原子替换），UTF-8 按字符限长 |
-| `admin` | 管理接口：`hotfix_token` 鉴权 + `process.run` 执行配置白名单命令（无 shell、不可附参数） |
+| `admin` | 管理接口：`hotfix_token` 鉴权 + `process.run` 执行配置白名单命令（无 shell、不可附参数）；`/api/health` 就绪探针、在线玩家 list/kick/say/save、审计 CSV 导出 |
+| `ledger` | sqlite 事件账本：进场/金币雨等事件落库，供 `/api/events` 查询 |
+| `audit` | `crypto.sha256` + sqlite 哈希链防篡改审计，外部注入或改动必被 verify 检出 |
+| `webhook` | `http.request` 出站回调，把世界事件外发到配置的接收端 |
+| `metrics` | `net.udp_server` 指标推送（注册/推送/注销，默认 :8092） |
+| `redis_store` | redis ZSET 排行镜像与跨服聊天；redis 缺失时自动降级并 SKIP 相关用例 |
+| `backup` | 加密世界备份信封：zstd 压缩 + AES-128-CBC + base64 + CRC32 + uuid，支持定时与剪枝 |
 
 跨帧状态使用 FakeLua **container** / NativeObject（arena reset 后 Lua table 不可长期持有）。
 
@@ -346,10 +352,24 @@ fakefish/
     hotreload.lua         # 运行中脚本热更编排（快照/重编译/状态迁移）
     net_ws.lua            # WebSocket 路由、事件分发与 20Hz 场景快照广播
     http_static.lua       # HTTP 静态前端托管 + JSON API（rank/stats）
+    ledger.lua            # sqlite 事件账本（enter/feast 落库与 /api/events）
+    audit.lua             # crypto.sha256 防篡改审计链
+    webhook.lua           # http.request 出站 Webhook
+    metrics.lua           # net.udp_server 指标推送
+    redis_store.lua       # redis ZSET 排行镜像与跨服聊天（缺失自动降级）
+    feed.lua              # container.deque 有界内存事件流
+    motd.lua              # io + os.rename 原子公告
+    backup.lua            # zstd + AES-128-CBC 加密世界备份信封
+    admin.lua             # process.run 白名单运维口、健康探针、在线玩家管控
   web/                    # 纯原生 HTML5/Canvas 静态前端
     index.html            # 登录界面与全屏 Canvas 画布、HUD
     game.js               # WebSocket 客户端、相机跟随、平滑渲染
     style.css             # 暗色赛博霓虹风格 UI
+  scripts/                # 测试清单与 CI 辅助脚本
+    e2e-main.txt          # 主阶段 E2E 用例清单（22 个，唯一真源）
+    e2e-bots.txt          # 机器人阶段 E2E 用例清单（2 个）
+    run_e2e_suite.sh      # 按清单逐条执行，失败即非零退出
+    check_e2e_coverage.sh # 双向校验用例与清单一致（防漏登）
   test_client.js          # 端到端 WebSocket 连通与同步
   test_auth.js            # 鉴权/会话健壮性（畸形包、NaN/Inf、同账号互踢、挂连清理）
   test_combat.js          # 双客户端大鱼吃小鱼吃球与复活验证
@@ -361,6 +381,9 @@ fakefish/
   test_hotfix.js          # 运行中热更（含机器人场景）验证
   test_bots.js            # AI 机器人与历史排行验证
   test_persist.js         # 跨重启登录持久化（隔离端口第二实例，无 MySQL 自动 SKIP）
+  # …另有 ledger / audit / webhook / redis / feed / protobuf / http_compress /
+  #   admin / backup / config_export / metrics / admin_ops 共 12 个 E2E，
+  #   全部登记在 scripts/e2e-main.txt
   CMakeLists.txt          # 工程构建配置（Modern CMake find_package）
 ```
 
@@ -540,6 +563,14 @@ fakelua 上游 CMake 固定使用 GCC 参数（`-fPIC/-ggdb3` 等），不支持
 - [x] **E2E 跨平台**：三个自起子服务器的用例（persist/redis/webhook）的二进制路径在 win32 下补 `fakefish.exe`；test_audit 经 PATH 上的 `sqlite3.exe` 注入伪造行（CI 用 mingw-w64 sqlite3 包）
 - [x] **CI 新增 `test-windows`（windows-2022）**：choco MySQL + tporadowski Redis 服务；MSYS2 MINGW64 安装 gcc/ninja/cmake/ccache/openssl/lua/sqlite3；按上游方式构建安装 fakelua（Ninja，CPM/ccache 缓存）；检出后强制 LF 重检（避免 CRLF 进入 YAML 解析值）；同清单 24 个 E2E 全跑，就绪窗口 120s（上游 fakelua Windows 为 `-O0` 构建），进程树用 `taskkill /T` 回收
 
+### Phase 21 — CI 收尾（E2E 清单单一真源 / 覆盖门禁 / 超时预算）
+
+Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要风险：24 个用例的调用序列此前在三个 job 里各手写一份（外加 `package.json` 的 `test:all` 共四处），且 macOS job 实测已逼近超时上限。
+
+- [x] **E2E 清单收敛为单一真源**：新增 `scripts/e2e-main.txt`（主阶段 22 个）与 `scripts/e2e-bots.txt`（机器人阶段 2 个），三个 job 统一用 `bash scripts/run_e2e_suite.sh <清单>` 执行。此前新增用例只要漏改任一平台，该用例就会在该平台**静默不跑**且 CI 仍显示全绿——这是最难发现的一类假通过。平台差异（二进制名 `fakefish.exe`、停服方式 `kill` / `taskkill //T`、就绪窗口 90s / 120s、`HOTFIX_TIMEOUT_MS`）仍保留在各 job 内，未做强行统一
+- [x] **覆盖门禁 `scripts/check_e2e_coverage.sh`**：双向校验「每个 `test_*.js` 都已登记进清单」与「清单不引用不存在的文件」，任一方向不一致即失败。三平台 CI 在 JavaScript 语法门禁后以秒级成本运行，本地可 `npm run check:e2e`
+- [x] **超时预算按实测放宽**：run `38208038847` 实测 Ubuntu 14m17s / macOS 21m01s / Windows 19m16s。macOS 距原 30 分钟上限仅剩三成余量，与 Ubuntu 一并放宽到 45 分钟，避免 fakelua 缓存失效需现场编译时被误判超时；Windows 90 分钟维持不变
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -555,13 +586,14 @@ fakelua 上游 CMake 固定使用 GCC 参数（`-fPIC/-ggdb3` 等），不支持
 11. **M11**：世界聊天收发、发言节流与限长、进场历史同步、聊天面板与快捷表情：**已通过**
 12. **M12**：运行中热更脚本逻辑、不重启不断连、世界状态与机器人完整保留：**已通过**
 13. **M13**：MySQL 重启后老账号可登录、战绩不丢；重复注册被拒；同账号互踢与畸形包防护生效：**已通过**（MySQL 用例以 CI 为准，本地无 MySQL 时 `test_persist.js` 自动 SKIP）
-14. **M14**：长跑无残豆/布局可复现性问题；异常退出金币损失 ≤ 一个落盘周期；挂起连接与在途鉴权刷量被限流；NaN/Inf 移动包不污染世界：**已通过**（双平台 CI）
-15. **M15**：浏览器端页面无 JS 错误、注册进场渲染正常、被踢展示具体原因；`get_rank` 任意入参均返回合法 1–20 条；CI 具备前端语法门禁且 fakelua 按上游 SHA 缓存：**已通过**（本地全量 E2E + 浏览器实测；双平台 CI 待推送后确认）
-16. **M16**：8 类 fakelua 原生能力全量接入并各配 E2E——event 事件总线解耦、sqlite 事件账本与 `/api/events`、`http.request` 出站 Webhook、`net.udp_server` 指标推送、crypto 随机盐口令（旧哈希透明迁移）、random PCG 多流（状态可热更回放）、utf8/url/csv、redis ZSET 镜像与跨服聊天（缺失自动降级/SKIP）：**已通过**（本地全量 E2E 16/16；双平台 CI 待推送后确认）
-17. **M17**：fakelua 剩余原生模块全部接入真实业务并各配 E2E——`compress` gzip 协商压缩（q 值/阈值/回退）、`protobuf` `/api/world.pbf` 二进制世界快照（手写 wire 解码器断言）、`container.deque` 有界内存事件流（热更不丢）、`io`+`os.rename` 原子公告（login_ok 下发/字符限长）、`process.run` token 鉴权白名单运维口、`serialize` 二进制/文本往返自检：**已通过**（本地全量 E2E + 双平台 CI）
-18. **M18**：运维安全后台——`crypto.sha256`+sqlite 防篡改审计链（外部注入/改动 verify 必检出）、`compress.zstd`+AES-128-CBC+base64+CRC32+uuid+PCG 加密备份信封（字节级篡改检出、restore 回滚 MOTD、自动剪枝）、`log` 文件落盘与尾部拉取、`toml`/`ini` 脱敏配置导出；HTTP 入口异常兜底不杀进程、新模块支持热更：**本地 23/23 已通过；双平台 CI 待推送后确认**
-19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；双平台 CI 待推送后确认**
-20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**本地代码改动完成；Windows CI 待推送后确认**
+14. **M14**：长跑无残豆/布局可复现性问题；异常退出金币损失 ≤ 一个落盘周期；挂起连接与在途鉴权刷量被限流；NaN/Inf 移动包不污染世界：**已通过**（三平台 CI）
+15. **M15**：浏览器端页面无 JS 错误、注册进场渲染正常、被踢展示具体原因；`get_rank` 任意入参均返回合法 1–20 条；CI 具备前端语法门禁且 fakelua 按上游 SHA 缓存：**已通过**（本地全量 E2E + 浏览器实测；三平台 CI 已通过，run `38208038847`）
+16. **M16**：8 类 fakelua 原生能力全量接入并各配 E2E——event 事件总线解耦、sqlite 事件账本与 `/api/events`、`http.request` 出站 Webhook、`net.udp_server` 指标推送、crypto 随机盐口令（旧哈希透明迁移）、random PCG 多流（状态可热更回放）、utf8/url/csv、redis ZSET 镜像与跨服聊天（缺失自动降级/SKIP）：**已通过**（本地全量 E2E 16/16；三平台 CI 已通过，run `38208038847`）
+17. **M17**：fakelua 剩余原生模块全部接入真实业务并各配 E2E——`compress` gzip 协商压缩（q 值/阈值/回退）、`protobuf` `/api/world.pbf` 二进制世界快照（手写 wire 解码器断言）、`container.deque` 有界内存事件流（热更不丢）、`io`+`os.rename` 原子公告（login_ok 下发/字符限长）、`process.run` token 鉴权白名单运维口、`serialize` 二进制/文本往返自检：**已通过**（本地全量 E2E + 三平台 CI 已通过，run `38208038847`）
+18. **M18**：运维安全后台——`crypto.sha256`+sqlite 防篡改审计链（外部注入/改动 verify 必检出）、`compress.zstd`+AES-128-CBC+base64+CRC32+uuid+PCG 加密备份信封（字节级篡改检出、restore 回滚 MOTD、自动剪枝）、`log` 文件落盘与尾部拉取、`toml`/`ini` 脱敏配置导出；HTTP 入口异常兜底不杀进程、新模块支持热更：**本地 23/23 已通过；三平台 CI 已通过**（run `38208038847`）
+19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；三平台 CI 已通过**（run `38208038847`）
+20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**已通过**（三平台 CI 并行，run `38208038847`：Ubuntu 14m17s / macOS 21m01s / Windows 19m16s 全绿）
+21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**本地已验证**（清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致、覆盖校验通过、`ci.yml` 三 job 各恰 2 次清单调用）；**三平台 CI 待推送后确认**
 
 ---
 
@@ -653,9 +685,12 @@ http://127.0.0.1:8080
 npm install ws
 npm test               # 跑全部用例（与 CI 清单一致；无 MySQL 时 test_persist 自动 SKIP）
 npm run test:auth      # 也可单独运行某个套件
+npm run check:e2e      # 校验 test_*.js 与 scripts/e2e-*.txt 清单双向一致
 ```
 
 > 注意：除 `test_bots.js` / `test_persist.js` 外的用例按无机器人世界（`bot_count: 0`）设计，CI 会在该阶段后重启为 `bot_count: 3` 再跑机器人与持久化用例。
+
+用例清单的唯一真源是 `scripts/e2e-main.txt`（主阶段 22 个）与 `scripts/e2e-bots.txt`（机器人阶段 2 个），三平台 CI 均通过 `scripts/run_e2e_suite.sh` 读取它们执行。**新增 `test_*.js` 时必须同时登记进对应清单**，否则该用例在 CI 里不会被执行——`npm run check:e2e`（CI 中同名步骤）会拦截这种情况。
 
 ---
 

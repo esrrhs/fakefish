@@ -1,0 +1,27 @@
+# 主阶段 E2E 清单（唯一真源）：在 bot_count=0 的确定性世界下按序执行。
+# 顺序有意义：powerup/feast/zone/split 是对时序敏感的活世界用例，
+# admin_ops/hotfix 放在其后，避免其建连churn与加密备份扰动前面几组。
+# 由 scripts/run_e2e_suite.sh 读取；CI 三平台与本地共用同一份。
+# 新增 test_*.js 必须登记于此或 e2e-bots.txt，否则 coverage 校验会失败。
+test_client.js
+test_auth.js
+test_combat.js
+test_api.js
+test_ledger.js
+test_chat_utf8.js
+test_metrics.js
+test_webhook.js
+test_redis.js
+test_feed.js
+test_protobuf.js
+test_http_compress.js
+test_admin.js
+test_audit.js
+test_backup.js
+test_config_export.js
+test_powerup.js
+test_feast.js
+test_zone.js
+test_split.js
+test_admin_ops.js
+test_hotfix.js

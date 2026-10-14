@@ -1,0 +1,5 @@
+# 机器人阶段 E2E 清单：服务器以 bot_count=3 重启后执行。
+# test_persist 自起子实例（18080/18081），须放在最后。
+# 由 scripts/run_e2e_suite.sh 读取。
+test_bots.js
+test_persist.js
