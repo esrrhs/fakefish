@@ -88,7 +88,7 @@
 |------|------|------|
 | `register` | `username`, `password` | 注册 |
 | `login` | `username`, `password` | 登录并进场 |
-| `guest` | 无 | 游客免注册进场（`guest.enabled=true` 时可用）；昵称由服务端按 `guest.prefix` + 4 位随机数字生成 |
+| `guest` | 可选 `name`, `token` | 游客免注册进场（`guest.enabled=true` 时可用）。不带凭证时服务端按 `guest.prefix` + 4 位随机数字生成昵称；带上次的 `name` + `token` 则复用同一游客、延续战绩 |
 | `move` | `dx`, `dy`（number，长度 >1 自动归一化；NaN/Inf 拒收） | 移动意图方向 |
 | `split` | 无 | 分裂：每个达条件的细胞分出一半，新细胞沿当前方向弹出 |
 | `chat` | `content` | 发送世界聊天（服务器裁剪、限长并按玩家节流） |
@@ -103,7 +103,7 @@
 
 | type | 字段 | 说明 |
 |------|------|------|
-| `login_ok` | `player_id`, `name`, `gold`, `map`, `motd?` | 登录成功；`name` 为服务端认定的昵称（游客由服务端生成，客户端须以此为准）；`motd` 为当前登录公告（无公告时不带该字段） |
+| `login_ok` | `player_id`, `name`, `gold`, `map`, `motd?`, `guest_token?` | 登录成功；`name` 为服务端认定的昵称（游客由服务端生成，客户端须以此为准）；`motd` 为当前登录公告（无公告时不带该字段）；`guest_token` 仅游客登录时携带，客户端存起来即可在下次打开时复用同一游客 |
 | `login_fail` / `register_fail` | `reason` | 失败原因 |
 | `snapshot` | `players[]`, `foods[]`, `powerups[]`, `zone` | 全量场景状态（zone 为当前安全区信息） |
 | `powerup` | `player_id`, `name`, `kind` | 道具拾取事件（kind: speed/shield/magnet） |
@@ -577,10 +577,10 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 要把 demo 挂到公网让人点进来就能玩，注册这一步是最大的流失点。本阶段让访客无需任何输入即可进场，同时保证开放访问不会拖垮服务端。
 
 - [x] **协议新增 `guest` 帧**：客户端不带任何身份信息，服务端按 `guest.prefix`（默认「游客」）+ 4 位随机数字生成昵称，撞号则换号重试（`is_guest` 标记）。`login_ok` 相应新增 `name` 字段——游客昵称只有服务端知道，前端必须以此为准而不是自己拼
-- [x] **游客账号纯内存**：用 `DB.create_memory_account` 建号并打 `is_guest`，不写 MySQL。连带让 `update_gold` / `add_kill` / `add_death` 对游客只更新内存、不发 SQL——否则公网下大量游客的周期落盘会白白占满 `pool_size=2` 的连接池，把正式用户的写库也拖慢
-- [x] **游客不进历史榜**：`sort_top` 排除 `is_guest`。有 MySQL 时游客不落库自然不上榜；无 MySQL 走内存榜时也一并排除，保证两种部署形态下排行榜表现一致，不会被游客刷满
+- [x] **游客战绩保留**：游客账号照常写进 MySQL `accounts` 并进历史排行榜。凭证机制让「同一个人下次打开还是同一个游客」——服务端用 `guest.secret`（未配置则自动生成并持久化到 `data/.guest_secret`）签发 `token = sha256(secret .. ":" .. 昵称)`，前端存 `localStorage`，下次随 `guest` 帧带回；验签通过即复用同一账号，金币/最佳战绩/击杀数全部延续。凭证失效（清缓存、清库、换了密钥）一律静默降级为新游客，不把人卡住
+- [x] **凭证不能冒用**：`token` 由服务端密钥签名，不知道密钥就无法凭昵称反推，伪造凭证只会拿到一个全新的游客。此外游客名即便验签通过也要再挡一次引号/反斜杠/分号，杜绝畸形昵称进入 SQL 字面量；游客账号的 `password_hash` 填的是随机不可猜值，杜绝他人用空密码冒用
 - [x] **前端打开即玩**：新增免鉴权 `GET /api/guest` 暴露 `{enabled, auto_enter, prefix}`，前端据此决定自动以游客进场还是显示登录框；登录框先同步隐藏（避免自动进场时闪一下），`?login=1` 可唤出登录/注册。拿不到该接口（旧服务端）时回退到原有登录流程
-- [x] **E2E `test_guest.js`**：覆盖进场成功、昵称前缀与唯一性、确实出现在世界快照、不进历史榜、游客名不可被注册占用（`is_valid_username` 只接受 `[%w_]`，中文名天然被拒）
+- [x] **E2E `test_guest.js`**：覆盖进场成功、昵称前缀与唯一性、确实出现在世界快照、凭证复用回到同一账号（同名同 id 同金币）、伪造凭证拿不到别人身份、游客进历史榜、游客名不可被注册占用（`is_valid_username` 只接受 `[%w_]`，中文名天然被拒）
 - [x] **Windows combat 超时预算（连带修复）**：游客用例在 Windows 上 10/10 全过（中文昵称没问题），红灯挂在 `test_combat.js`——Phase 1 的 15s 内 Hunter 只长到 `gold=115`（阈值 125），Phase 2 便全程停在 grow 模式、从不 strike，dist 稳定在 250 直到 30s 超时。Windows 上 fakelua 是 `-O0` 构建且走 gcc 子进程，吃豆发育明显慢于 Unix，固定预算本就临界。超时改由 `COMBAT_PHASE1_MS` / `COMBAT_PHASE2_MS` 给出（默认 15000/30000 不变，Windows 放宽到 30000/60000），判定逻辑不动；并把 `test_guest.js` 从 combat 之前移到活世界用例之后——游客会往世界注入真实玩家，不该排在时序敏感的用例前面
 
 > **实现注意**：`begin_guest` 运行在 WS `recv` 回调上下文，按 P1-6 不能写模块级 local，因此昵称生成只用 PCG 随机流（`random.new` 的 NativeObject 内部状态）+ 撞号重试，**刻意不做自增序号**——那需要写模块级变量，在回调里会静默失效。
@@ -608,7 +608,7 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；三平台 CI 已通过**（run `38208038847`）
 20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**已通过**（三平台 CI 并行，run `38208038847`：Ubuntu 14m17s / macOS 21m01s / Windows 19m16s 全绿）
 21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**已通过**（run `38589359869`：三平台各执行 24 个用例、main / bots 两个 suite 均 passed、覆盖门禁 OK；本地清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致，`ci.yml` 三 job 各恰 2 次清单调用）
-22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 纯内存账号（不写 MySQL、不进历史榜）+ 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）：**已通过**（run `38605308316`：三平台各执行 25 个用例全绿，Windows 侧 `test_guest` 10/10 且 combat Phase 2 成功；本地 `test_guest.js` 10/10、前端脚本级冒烟两种进入场景、test_client / auth / api / combat 回归全过）
+22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）+ 凭证机制让战绩延续（账号写 MySQL、进历史榜、`localStorage` 存凭证复用同一游客）：**已通过**（run `38605308316`：三平台各执行 25 个用例全绿，Windows 侧 `test_guest` 10/10 且 combat Phase 2 成功；凭证复用改版后本地 `test_guest.js` 17/17、前端脚本级冒烟「首次无凭证 / 二次带凭证复用」双场景通过）
 
 ---
 
@@ -693,7 +693,9 @@ http://127.0.0.1:8080
 - 使用 **WASD** 或 **方向键** 控制金币球移动。
 - 拾取场景中的小金币豆增加金币和体型，体型大于其他玩家时可将其吞噬！
 
-> **游客账号的特性**：只在内存创建，**不写 MySQL、不进历史排行榜，断开即释放**。因此开放访问也不会把 `accounts` 表刷爆，代价是游客战绩不保留。想让访客沉淀成正式账号，把 `guest.auto_enter` 设为 false 即可退回登录框引导注册。
+> **游客的战绩是保留的**：游客账号会写进 `accounts` 表、进历史排行榜；服务端给每个游客签发一个凭证（`sha256(secret .. ":" .. 昵称)`），前端存在 `localStorage`，下次打开自动带回，**同一个人换次打开还是同一个游客，金币/最佳战绩/击杀数都延续**。换浏览器或清缓存会拿到新身份（旧身份仍在库里，只是找不回来）。
+>
+> 运维上要注意：开放访问后 `accounts` 表会随游客数持续增长，可用 `DELETE FROM accounts WHERE username LIKE '游客%' AND updated_at < DATE_SUB(NOW(), INTERVAL 30 DAY);` 之类定期清理。
 
 ### 6. 运行自动化测试
 

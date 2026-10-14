@@ -104,13 +104,17 @@ log:
   level: "info"           # trace / debug / info / warn / error
 
 # 游客登录（免注册直接进场）：公网部署时「打开即玩」。
-# 游客账号只在内存创建：不写 MySQL、不进历史排行榜、断开即释放，
-# 因此开放访问也不会把 accounts 表刷爆。
+# 游客账号会写进 MySQL accounts 并进历史排行榜，战绩由浏览器里的凭证延续：
+# 服务端给游客签发凭证（凭证 = sha256(secret .. ":" .. 昵称)），前端存 localStorage，
+# 下次打开带回即可恢复同一个游客。换浏览器或清缓存会拿到新身份。
+# 注意：开放访问后 accounts 表会随游客数持续增长，需要定期清理（见 README）。
 guest:
   enabled: true          # false 时拒绝一切游客请求，前端自动退回登录框
   auto_enter: true       # true：打开页面即以游客身份自动进场，登录框不显示
                          #      （URL 加 ?login=1 仍可唤出登录框注册正式账号）
   prefix: "游客"          # 游客昵称前缀，后接 4 位随机数字
+  secret: ""             # 凭证签名密钥。留空则自动生成并持久化到 data/.guest_secret；
+                         # 换密钥会让所有已发出的游客凭证失效（游客会拿到新身份）
 
 game:
   map_width: 2000          # 地图宽度

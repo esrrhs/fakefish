@@ -57,8 +57,9 @@ function handle_message(connid, msg)
         Auth.begin_login(connid, msg["username"], msg["password"])
 
     elseif mtype == "guest" then
-        -- 游客免注册进场（昵称/账号全由服务端生成，不接收任何客户端输入）
-        Auth.begin_guest(connid)
+        -- 游客免注册进场。name/token 是客户端上次存下的凭证（localStorage），
+        -- 带回且验签通过即复用同一账号、延续战绩；没有或失效则由服务端新建。
+        Auth.begin_guest(connid, msg["name"], msg["token"])
 
     elseif mtype == "move" then
         local dx = msg["dx"]

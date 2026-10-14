@@ -12,12 +12,68 @@ local guest_prefix = nil
 -- 独立 PCG 流：游客昵称后缀。:int() 推进的是 NativeObject 内部状态，
 -- 不写模块级 local，因此在 WS recv 回调上下文里调用也是安全的（P1-6）。
 local guest_rng = nil
+-- 游客凭证的签名密钥。凭证 = sha256(secret .. ":" .. username)，密钥不入库、不下发，
+-- 因此无法凭昵称反推凭证，也无法伪造他人身份。
+local guest_secret = nil
+
+local GUEST_SECRET_FILE = "data/.guest_secret"
+
+-- 密钥优先取 guest.secret；未配置则持久化到 data/.guest_secret，
+-- 让服务重启后老凭证仍然有效——否则游客一重启就无法复用，战绩也就断了。
+local function load_or_create_secret()
+    local f = io.open(GUEST_SECRET_FILE, "r")
+    if f then
+        local c = f:read("*a")
+        f:close()
+        if type_of(c) == "string" then
+            local trimmed = string.gsub(c, "[\r\n]+$", "")
+            if type_of(trimmed) == "string" and trimmed ~= "" then
+                return trimmed
+            end
+        end
+    end
+
+    local gen = crypto.uuid() .. "-" .. crypto.uuid()
+    local okw, werr = pcall(function()
+        local dir = os.dirname(GUEST_SECRET_FILE)
+        if dir ~= nil and dir ~= "" and dir ~= "." then
+            os.mkdir(dir)
+        end
+        local wf = io.open(GUEST_SECRET_FILE, "w")
+        if wf then
+            wf:write(gen)
+            wf:close()
+        end
+    end)
+    if not okw then
+        print("[Auth] Warning: persist guest secret failed: " .. tostring(werr))
+    end
+    return gen
+end
+
+-- 为游客昵称签发凭证
+local function guest_token_for(name)
+    if guest_secret == nil or name == nil then return nil end
+    return crypto.sha256(guest_secret .. ":" .. tostring(name))
+end
+
+-- 昵称防御：客户端会把 name 带回，即使凭证校验通过也再挡一次引号/反斜杠，
+-- 杜绝任何把畸形昵称带进 SQL 字符串字面量的可能。
+local function is_safe_guest_name(name)
+    if type_of(name) ~= "string" then return false end
+    if #name == 0 or #name > 32 then return false end
+    if string.find(name, "'", 1, true) ~= nil then return false end
+    if string.find(name, "\\", 1, true) ~= nil then return false end
+    if string.find(name, ";", 1, true) ~= nil then return false end
+    return true
+end
 
 -- 游客配置初始化（main 启动时调用；绝不能在 WS 回调上下文中执行）
 function init(cfg)
     guest_enabled = false
     guest_auto_enter = false
     guest_prefix = "游客"
+    guest_secret = nil
 
     if cfg ~= nil then
         local e = cfg["enabled"]
@@ -28,6 +84,14 @@ function init(cfg)
         if p ~= nil and type_of(p) == "string" and #p > 0 then
             guest_prefix = p
         end
+        local s = cfg["secret"]
+        if s ~= nil and type_of(s) == "string" and #s > 0 then
+            guest_secret = s
+        end
+    end
+
+    if guest_secret == nil then
+        guest_secret = load_or_create_secret()
     end
 
     guest_rng = random.new(os.time() + 12345)
@@ -112,6 +176,11 @@ local function finish_login(connid, acc)
         gold = World.player_total_gold(p),
         map = World.get_map_info()
     }
+    -- 游客凭证：客户端存进 localStorage，下次打开带回即可复用同一账号
+    local gtok = acc.guest_token
+    if gtok ~= nil then
+        login_ok.guest_token = gtok
+    end
     -- 有登录公告时随登录帧下发（io 持久化的 data/motd.txt）
     local motd = Motd.get()
     if motd ~= nil then
@@ -167,23 +236,17 @@ function begin_register(connid, username, password)
     })
 end
 
--- 游客入口（WS recv 回调中调用）：免注册直接进场。
--- 游客账号只在内存表创建：不写 MySQL、不进历史排行榜，断开即随账号一起释放，
--- 因此公网部署不会被游客刷爆 accounts 表。
+-- 建一个新游客：落库（战绩要保留，必须写 MySQL）+ 签发凭证。
 -- 昵称冲突时用同一 PCG 流换号重试；刻意不做自增序号——那需要写模块级 local，
 -- 在回调上下文里会静默失效（P1-6）。
-function begin_guest(connid)
-    if not guest_enabled then
-        World.enqueue_response(connid, { type = "login_fail", reason = "游客登录已关闭，请先注册账号" })
-        return
-    end
-
-    local name = nil
-    for i = 1, 50 do
-        local cand = guest_prefix .. tostring(guest_rng:int(1000, 9999))
-        if DB.memory_account(cand) == nil then
-            name = cand
-            break
+local function create_guest(connid, name)
+    if name == nil then
+        for i = 1, 50 do
+            local cand = guest_prefix .. tostring(guest_rng:int(1000, 9999))
+            if DB.memory_account(cand) == nil then
+                name = cand
+                break
+            end
         end
     end
     if name == nil then
@@ -192,9 +255,45 @@ function begin_guest(connid)
     end
 
     local initial = World.initial_gold_value()
-    local acc = DB.create_memory_account(name, "", initial)
+    -- 游客没有密码：塞一个随机不可猜的哈希，杜绝他人用空密码冒用该账号
+    local acc = DB.create_memory_account(name, hash_password(crypto.uuid()), initial)
     acc.is_guest = true
+    acc.guest_token = guest_token_for(name)
+    DB.async_insert_account(name, acc.password_hash, initial)
     finish_login(connid, acc)
+end
+
+-- 游客入口（WS recv 回调中调用）：免注册直接进场。
+-- 客户端可带回上次保存的 {name, token}；凭证签名校验通过即复用同一账号，
+-- 战绩（gold/best_gold/kills/deaths）因此得以延续。校验不通过一律降级为新游客，
+-- 不报错——清了 localStorage、清库或换了服务端密钥都不该把人卡在登录页。
+function begin_guest(connid, name, token)
+    if not guest_enabled then
+        World.enqueue_response(connid, { type = "login_fail", reason = "游客登录已关闭，请先注册账号" })
+        return
+    end
+
+    if is_safe_guest_name(name) and type_of(token) == "string"
+       and token ~= "" and guest_token_for(name) == token then
+        local mem = DB.memory_account(name)
+        if mem ~= nil then
+            mem.guest_token = token
+            finish_login(connid, mem)
+            return
+        end
+        if DB.is_connected() then
+            -- 同一连接上一条鉴权请求尚未返回：直接拒绝，避免慢库下队列被单连接灌爆
+            if DB.has_pending_auth(connid) then
+                World.enqueue_response(connid, { type = "login_fail", reason = "操作过于频繁，请稍候再试" })
+                return
+            end
+            DB.enqueue_auth({ kind = "guest", connid = connid, username = name })
+            return
+        end
+        -- 无 MySQL：库里查无此人，当新游客重建（此时战绩本来也没法留）
+    end
+
+    create_guest(connid, nil)
 end
 
 -- 登录入口（WS recv 回调中调用）：
@@ -267,8 +366,31 @@ function tick()
                     local initial = World.initial_gold_value()
                     local acc = DB.create_memory_account(cur.username, cur.new_hash, initial)
                     finish_login(cur.connid, acc)
+                elseif cur.kind == "guest" then
+                    -- 查询故障：内存重建，战绩丢了但人能进来
+                    create_guest(cur.connid, cur.username)
                 else
                     World.enqueue_response(cur.connid, { type = "login_fail", reason = "账号不存在，请先注册" })
+                end
+            elseif cur.kind == "guest" then
+                -- 凭证在入队前已验签，这里只需取回档案；库里没有（被清理或首次落库
+                -- 未成功）就按同一昵称重建，避免老凭证永远卡在「查无此人」。
+                if cur.row_id == nil then
+                    create_guest(cur.connid, cur.username)
+                else
+                    local acc = {
+                        id = cur.row_id,
+                        username = cur.username,
+                        password_hash = cur.row_hash,
+                        gold = cur.row_gold,
+                        best_gold = cur.row_best,
+                        kills = cur.row_kills or 0,
+                        deaths = cur.row_deaths or 0
+                    }
+                    acc.is_guest = true
+                    acc.guest_token = guest_token_for(cur.username)
+                    DB.put_memory_account(acc)
+                    finish_login(cur.connid, acc)
                 end
             elseif cur.kind == "register" then
                 if cur.row_id ~= nil then

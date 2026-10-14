@@ -14,6 +14,7 @@
     let authMode = "login"; // 'login' / 'register' / 'guest'
     let zone = null; // { x, y, r, phase, holding, next_in }
     let serverKickReason = ""; // 服务端 error 帧携带的原因（如同账号在别处登录），随后连接会被断开
+    let guestCred = null; // 本地保存的游客凭证 {name, token}，用于下次复用同一游客
 
     // DOM 元素
     const canvas = document.getElementById("game-canvas");
@@ -182,16 +183,31 @@
     }
 
     function sendAuth(username, password) {
-        // 游客模式：昵称与账号全部由服务端生成，客户端不传任何身份信息
+        // 游客模式：没有凭证时由服务端生成昵称；有凭证则带回以复用同一游客
         const payload = authMode === "guest"
-            ? { type: "guest" }
+            ? (guestCred ? { type: "guest", name: guestCred.name, token: guestCred.token } : { type: "guest" })
             : { type: authMode, username: username, password: password };
         ws.send(JSON.stringify(payload));
     }
 
-    // 以游客身份进场（服务端昵称前缀由 guest.prefix 配置）
+    // 游客凭证存 localStorage：下次打开带回即可复用同一个游客，战绩得以延续
+    const GUEST_KEY = 'fakefish.guest';
+    function loadGuestCred() {
+        try {
+            const raw = localStorage.getItem(GUEST_KEY);
+            if (!raw) return null;
+            const c = JSON.parse(raw);
+            return (c && c.name && c.token) ? c : null;
+        } catch (e) { return null; }
+    }
+    function saveGuestCred(name, token) {
+        try { localStorage.setItem(GUEST_KEY, JSON.stringify({ name, token })); } catch (e) {}
+    }
+
+    // 以游客身份进场（昵称由服务端按 guest.prefix 生成；有本地凭证则复用）
     function enterAsGuest() {
         authMode = "guest";
+        guestCred = loadGuestCred();
         authError.classList.add("hidden");
         btnSubmit.disabled = true;
         btnSubmit.innerText = "正在进入...";
@@ -214,6 +230,8 @@
                 chatOpen = false;
                 // 昵称一律以服务端为准：游客的名字由服务端生成，本地没有输入过
                 myName = msg.name || myName;
+                // 保存游客凭证，下次打开自动回到同一个游客（战绩延续）
+                if (msg.guest_token) saveGuestCred(myName, msg.guest_token);
                 hudName.innerText = myName;
                 showToast(`欢迎进入竞技场，${myName}！`, "success");
                 requestRank();
