@@ -609,7 +609,7 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 19. **M19**：运维控制台深化——免鉴权 `/api/health` 就绪探针（子系统布尔状态）、在线玩家管控（list/kick 自定义原因两阶段断链/say 系统公告/save 立即落盘，全程审计）、`backup.interval_s` 定时自动备份（主循环秒级调度 + 运行时动态调周期/查状态、热更迁移）、审计 CSV 导出：**本地 24/24 已通过；三平台 CI 已通过**（run `38208038847`）
 20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**已通过**（三平台 CI 并行，run `38208038847`：Ubuntu 14m17s / macOS 21m01s / Windows 19m16s 全绿）
 21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**已通过**（run `38589359869`：三平台各执行 24 个用例、main / bots 两个 suite 均 passed、覆盖门禁 OK；本地清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致，`ci.yml` 三 job 各恰 2 次清单调用）
-22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）+ 凭证机制让战绩延续（账号写 MySQL、进历史榜、`localStorage` 存凭证复用同一游客）：**已通过**（run `38605308316`：三平台各执行 25 个用例全绿，Windows 侧 `test_guest` 10/10 且 combat Phase 2 成功；凭证复用改版后本地 `test_guest.js` 17/17、前端脚本级冒烟「首次无凭证 / 二次带凭证复用」双场景通过）
+22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）+ 凭证机制让战绩延续（账号写 MySQL、进历史榜、`localStorage` 存凭证复用同一游客）：**已通过**（run `38666766807`：三平台各执行 25 个用例全绿、0 FAIL、main/bots 两个 suite 均 passed；Ubuntu 侧 `test_guest.js` 17/17，其中「游客进历史榜」在服务端重启后的 bots 阶段仍能从 MySQL 读出 `游客2567` / `游客9950` / `游客7679`，证明游客账号确实落库而非只活在内存）
 
 ---
 
