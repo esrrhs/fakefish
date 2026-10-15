@@ -36,7 +36,8 @@ end
 function init(cfg)
     ensure_inited()
     -- 刷新节奏由 timer 心跳驱动（Main.on_heartbeat 每 5s 调 tick_refresh）
-    top_cache = { list = {} }
+    -- pending：单飞标记，见 tick_refresh 的乱序回调说明
+    top_cache = { list = {}, pending = false, pending_t0 = 0 }
 
     if cfg == nil then
         cfg = {}
@@ -337,21 +338,44 @@ local function sort_top(limit)
     return top
 end
 
+-- 在途排行 SELECT 的最长等待秒数：超时视为回调丢失，放弃这一轮并改用内存兜底，
+-- 避免单飞标记被一条永不返回的查询永久卡死
+local rank_inflight_timeout_s = 15
+
 -- 刷新排行缓存（由 timer 心跳每 5s 调用；SELECT 结果由 DB.on_top_result 写回）
+--
+-- 单飞（同一时刻只允许一条排行 SELECT 在途）是必须的：conn:query 是异步的，
+-- 而 fakelua 的 mysql_pool 没有租约语义——query 之后立刻 release，连接马上被
+-- 别的查询（update_gold/add_kill/登录 SELECT…）拿去复用，于是排行查询会在连接
+-- 上排队，回调按【完成顺序】而非【发起顺序】返回。实测（CI run 38656504187）
+-- 先发起的旧快照晚到、把已经刷新的新快照覆盖回去，榜上条目数出现
+-- 9 → 16 → 17 → 9 的非单调跳变，刚注册的账号（含游客）在榜上忽隐忽现。
+-- 单飞 + 「非预期的回调直接丢弃」保证缓存只会前进、不会回退。
 function tick_refresh()
     if top_cache == nil then return end
 
     if pool ~= nil then
-        local conn = pool:acquire()
-        if conn ~= nil then
-            local sql = "SELECT username, best_gold, kills FROM accounts ORDER BY best_gold DESC, kills DESC LIMIT 20"
-            conn:query(sql, "DB.on_top_result")
-            pool:release(conn)
-            return
+        if top_cache.pending then
+            if os.time() - top_cache.pending_t0 < rank_inflight_timeout_s then
+                return
+            end
+            -- 在途超时：放弃这条查询，本轮改走内存，下一轮重新发起
+            top_cache.pending = false
+            print("[DB] Rank refresh in-flight timed out, fallback to memory")
+        else
+            local conn = pool:acquire()
+            if conn ~= nil then
+                top_cache.pending = true
+                top_cache.pending_t0 = os.time()
+                local sql = "SELECT username, best_gold, kills FROM accounts ORDER BY best_gold DESC, kills DESC LIMIT 20"
+                conn:query(sql, "DB.on_top_result")
+                pool:release(conn)
+                return
+            end
         end
     end
 
-    -- 无 MySQL 或无可用连接：直接用内存数据刷新
+    -- 无 MySQL、无可用连接或在途超时：直接用内存数据刷新，保证榜上始终有数据
     top_cache.list = sort_top(20)
     print("[DB] Rank cache refreshed from memory: " .. tostring(#top_cache.list) .. " entries")
 end
@@ -360,8 +384,14 @@ end
 -- 结果表格式: result[1]=true, result[2]=列信息, result[3]=行表（按列序索引，值均为字符串）
 function on_top_result(c, err, result)
     if top_cache == nil then return end
+    -- 非预期的回调（在途超时后姗姗来迟的旧快照、重复派发）：直接丢弃，
+    -- 否则会把已经刷新的新榜覆盖回旧榜（见 tick_refresh 的乱序回调说明）
+    if not top_cache.pending then return end
+    top_cache.pending = false
+
     if err ~= nil and #err > 0 then
         -- 查询失败（连接不可用等）：回退内存排行，保证排行面板始终有数据
+        print("[DB] Rank query error: " .. tostring(err))
         top_cache.list = sort_top(20)
         return
     end

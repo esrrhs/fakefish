@@ -85,24 +85,36 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     check('伪造凭证 -> 仍是 login_ok（降级为新游客）', m4.type === 'login_ok', J(m4));
     check('伪造凭证 -> 拿不到原游客身份', m4.type === 'login_ok' && m4.name !== g1, `${g1} vs ${m4.name}`);
 
-    // 6. 游客进历史排行榜（账号落库）。榜是 5s 心跳刷新的缓存，先等一轮。
-    //    必须用 ws3 发：第 4 步用同一凭证复用时已把 ws（旧会话）顶下线，
-    //    向已断开的连接发请求自然收不到应答（与正式账号同账号互踢一致）。
-    await sleep(6000);
-    const pr = waitFor(ws3, r => r.type === 'rank', 8000);
-    ws3.send(J({ type: 'get_rank', limit: 20 }));
-    const r = await pr;
-    const list = Array.isArray(r.list) ? r.list : [];
-    const inList = list.some(e => e.name === g1);
-    // 榜若已满 20 且全是更高战绩，被挤出也算合理，不算失败
-    const squeezedOut = list.length >= 20 && list.every(e => e.best_gold > 100);
-    check('游客进历史榜（或被更高战绩挤出）', inList || squeezedOut, J(list.slice(0, 3)));
-
-    // 7. 游客名不能被注册接口占用（游客名含中文，不符合用户名字符集 [^\w_]）
+    // 6. 游客名不能被注册接口占用（游客名含中文，不符合用户名字符集 [^\w_]）。
+    //    放在轮询等榜之前：等榜最多要 30s，期间不发客户端包会被 kick_idle 踢下线，
+    //    之后再往这条连接发请求就收不到应答了。
     const p5 = waitFor(ws2, x => x.type === 'register_fail' || x.type === 'login_ok', 8000);
     ws2.send(J({ type: 'register', username: g1, password: 'abc123' }));
     const m5 = await p5;
     check('游客名不能作为正式账号注册', m5.type === 'register_fail', J(m5));
+
+    // 7. 游客进历史排行榜（账号落库）。
+    //    必须用 ws3 发：第 4 步用同一凭证复用时已把 ws（旧会话）顶下线，
+    //    向已断开的连接发请求自然收不到应答（与正式账号同账号互踢一致）。
+    //    榜由 5s 心跳从 MySQL 刷新，INSERT 又是 fire-and-forget：CI 上库往返
+    //    可能要好几秒，故轮询最多 ~30s，而不是只等一轮——单次采样会把
+    //    「还没刷上」误判成「没落库」。
+    //    榜是 LIMIT 20：满榜且榜末战绩不低于游客（100）时，游客被挤出或并列落选
+    //    都属合理，不算失败；榜没满就必须能在榜上找到游客。
+    let list = [];
+    let inList = false;
+    for (let attempt = 1; attempt <= 12 && !inList; attempt++) {
+        await sleep(2500);
+        const pr = waitFor(ws3, r => r.type === 'rank', 8000);
+        ws3.send(J({ type: 'get_rank', limit: 20 }));
+        const r = await pr;
+        list = Array.isArray(r.list) ? r.list : [];
+        inList = list.some(e => e.name === g1);
+    }
+    const last = list.length > 0 ? list[list.length - 1].best_gold : -1;
+    const squeezedOut = list.length >= 20 && last >= 100;
+    check('游客进历史榜（或被更高战绩挤出）', inList || squeezedOut,
+        'len=' + list.length + ' last=' + last + ' ' + J(list.slice(0, 3)));
 
     try { ws.close(); } catch (e) {}
     try { ws2.close(); } catch (e) {}
