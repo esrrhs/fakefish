@@ -108,3 +108,17 @@ function run(cmd)
     end
     return true, { stdout = out, stderr = err, code = code }
 end
+
+-- ---- 帧边界持久化 ----
+-- commands 是「命令名 -> argv 数组」白名单，字符串键，JSON 编码安全。
+function persist()
+    Store.set("admin.token", admin_token)
+    Store.set("admin.timeout_ms", timeout_ms)
+    Store.set_json("admin.commands", commands)
+end
+
+function restore()
+    admin_token = Store.get("admin.token")
+    timeout_ms = Store.get("admin.timeout_ms")
+    commands = Store.get_json("admin.commands")
+end

@@ -34,7 +34,7 @@
 ┌─────────────┐   HTTP(静态页)    ┌──────────────────────────────┐
 │  浏览器前端  │ ───────────────► │  FakeFish Server (单线程)     │
 │  index.html │   WebSocket JSON │  FakeLua + net/http/mysql     │
-│  + canvas   │ ◄─────────────── │  配置 → 主循环 runtime.tick() │
+│  + canvas   │ ◄─────────────── │  配置 → init/update/fini 帧循环│
 └─────────────┘                  └──────────────┬───────────────┘
                                                 │ async mysql
                                                 ▼
@@ -44,7 +44,7 @@
                                          └────────────┘
 ```
 
-- **单进程单线程**：一个 FakeLua `State`，主循环里反复 `runtime.tick()`，驱动 WS / HTTP / MySQL / timer。
+- **单进程单线程**：一个 FakeLua `State`，宿主按 flua 固定入口驱动帧循环——`Main.init()` 一次、`Main.update()` 每帧一次（帧内 `runtime.tick()` 推进 WS / HTTP / MySQL / timer）、`Main.fini()` 一次。每帧一次顶层 Call 是 fakelua frame arena 能重置的前提，也是内存不随运行时长单调上涨的原因（详见 §11）。
 - **权威后端**：前端只发送意图（如移动方向）；位置、半径、吃球、金币变更一律由服务器计算并广播。
 - **依赖**：以 CPM/子模块等方式引入 `esrrhs/fakelua`，业务脚本用 FakeLua 子集编写（`package`、无 metatable 等约束）。
 
@@ -144,7 +144,24 @@
 | `redis_store` | redis ZSET 排行镜像与跨服聊天；redis 缺失时自动降级并 SKIP 相关用例 |
 | `backup` | 加密世界备份信封：zstd 压缩 + AES-128-CBC + base64 + CRC32 + uuid，支持定时与剪枝 |
 
-跨帧状态使用 FakeLua **container** / NativeObject（arena reset 后 Lua table 不可长期持有）。
+跨帧状态一律经 `server/store.lua` 落 C++ 堆（详见 §7.5）。
+
+### 7.5 帧循环与跨帧状态
+
+fakelua 没有 GC，frame arena 只在「顶层 Call 进入、重入计数归零」时重置，帧内产生的临时表与字符串随帧回收。因此：
+
+- **帧边界**：每个模块提供 `persist()` / `restore()`（`Backup` 因对外 API 已有同名 `restore(v, actor)`，改称 `frame_persist` / `frame_restore`），由 `Main.persist_all()` / `Main.restore_all()` 显式编排——fakelua 不能按字符串动态取跨包函数，只能逐个列出。
+- **唯一后端**：`server/store.lua`，底层是 State 持有的全局 NativeObject（`new_global_obj`，kv 在 C++ 堆）+ JSON 桥接（结构化状态编码成字符串存取，因为 container 拒绝存 Lua table）。取值统一走字符串键 `r["k"]`，避开热更后 spec 访问器失效的问题。
+- **什么必须入库**：判据是**值的来源**，不是变量声明在哪。
+
+  | 值的来源 | 跨帧 | 处理 |
+  |---|---|---|
+  | 编译期字面量（数字 / 字符串 / 文件级 table 构造） | 安全 | 留在文件级（fakelua 视其为常量，重新赋值会编译报错） |
+  | 数字 / 布尔 | 安全 | 留在文件级 |
+  | 运行期字符串（json/yaml 解码、拼接、从运行期 table 取出） | **失效** | 必须入库 |
+  | 运行期 table / container / NativeObject 句柄 | **失效**（悬垂且非 nil） | 必须入库；对象本体（连接池、deque、PCG 随机流）存对象本身而非壳 |
+
+- **回调上下文**：C++ 派发的 WS / MySQL / timer 回调与主循环共用同一份 JIT 副本（host 里 `disable_jit[JIT_TCC]=true`），但回调里创建的 table 仍不能跨帧存活——需要跨帧的一律写 Store，或只置标记、真正的构造留到主循环。
 
 ### 8. 配置（示例）
 
@@ -315,8 +332,23 @@ curl -X POST http://127.0.0.1:8080/api/admin/run \
 
 - 单线程 `State`；异步 IO 靠 `runtime.tick()`。
 - 无 coroutine / metatable；模块用 `package "Name"`。
-- 长期数据放 container / C++ NativeObject，不要依赖跨帧 Lua table。
+- 长期数据走 `Store`（C++ NativeObject / JSON 桥接），不要依赖跨帧 Lua table（判据见 §7.5）。
 - 网络：`net.ws_server`；库：`mysql.connect` / pool；配置：`yaml`/`toml`/`ini`；消息：`json`。
+
+### 11. 运行时资源占用（实测）
+
+> 数据来自 macOS（Apple 硅）+ 本地 MySQL，GCC JIT 后端，`bot_count` 与连接数见各行。
+> 数量级结论在不同平台一致，绝对值随机器与负载而变。
+
+| 场景 | 常驻内存（RSS） | 内存增长 | CPU（单核） |
+|---|---|---|---|
+| 空载：`bot_count: 0`、无客户端 | ~22.5 MB | +144 KB / 180 s（< 1 KB/s） | ~1.2 % |
+| 负载：`bot_count: 3` + 3 个持续移动的客户端 | ~23.7 MB | +208 KB / 100 s（≈ 2 KB/s） | ~1.9 % |
+
+- **冷启动约 30 s**：几乎全部是 20 个 `server/*.lua` 的 GCC JIT 编译，编译完成前不监听端口；热更只重编译被点名的单个模块，毫秒级生效。
+- **帧率**：目标 20 Hz（`tick=50ms`），实测广播 ~18.1 次快照/秒。
+- **HTTP**：本机 loopback 下 `/api/stats` 与静态首页各约 40 ms（含 fakelua 处理与 gzip 协商）。
+- **长跑**：每帧一次顶层 Call 让 frame arena 得以重置，帧内临时对象随帧回收；跨帧状态固定落在 C++ 堆（§7.5），因此稳态内存不随运行时长单调上涨。
 
 ---
 
@@ -328,7 +360,7 @@ curl -X POST http://127.0.0.1:8080/api/admin/run \
 - [x] 清空旧 C++/fake 多进程框架代码
 - [x] 本设计文档与开发计划写入 README
 - [x] 接入 `esrrhs/fakelua`（通过 Modern CMake `find_package(fakelua REQUIRED)`）
-- [x] 最小可运行入口：宿主程序 `host/main.cpp` 加载配置与 `server/main.lua`，进入 `runtime.tick`
+- [x] 最小可运行入口：宿主程序 `host/main.cpp` 加载配置与 `server/main.lua`，按 `init` / `update` / `fini` 驱动帧循环（帧内 `runtime.tick`）
 - [x] `.gitignore`、目录约定、`config.example.yaml`
 
 **项目目录结构：**
@@ -343,7 +375,8 @@ fakefish/
   host/
     main.cpp              # C++ 宿主入口，初始化 FakeLua State 并启动脚本
   server/                 # 权威服务端 FakeLua 业务脚本
-    main.lua              # 服务端主循环与模块编排
+    main.lua              # 服务端帧循环与模块编排（init/update/fini + persist_all/restore_all）
+    store.lua             # 跨帧状态唯一后端（NativeObject + JSON 桥接）
     config.lua            # YAML 配置解析与管理
     db.lua                # MySQL 连接池与内存回退存储
     auth.lua              # SHA256 密码哈希、用户注册与鉴权
@@ -586,6 +619,22 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 
 > **实现注意**：`begin_guest` 运行在 WS `recv` 回调上下文，按 P1-6 不能写模块级 local，因此昵称生成只用 PCG 随机流（`random.new` 的 NativeObject 内部状态）+ 撞号重试，**刻意不做自增序号**——那需要写模块级变量，在回调里会静默失效。
 
+### Phase 23 — flua 生命周期与跨帧状态治理
+
+服务端的全部跨帧状态收敛到 C++ 堆，帧循环改由宿主按 fakelua 官方 flua 入口驱动，让 frame arena 每帧都能重置。
+
+- [x] **宿主驱动帧循环**：`host/main.cpp` 依次 `Call` → `Main.init` 一次、`Main.update` 每帧一次、`Main.fini` 一次；`update` 返回非 0 即退出。`Main.start` 相应拆成三段，`init` 只做一次性装配，帧间需要带走的状态在 `init` 末尾统一落库
+- [x] **`server/store.lua`（新增）**：跨帧 / 跨回调共享状态的唯一入口。底层是 State 持有的全局 NativeObject（`new_global_obj`，幂等、按 key 共享），kv 落在 C++ 堆；结构化状态经 JSON 桥接编码成字符串存取（container 拒绝存 Lua table）。取值统一走字符串键，规避热更后 spec 访问器失效
+- [x] **帧边界显式编排**：每个模块提供 `persist()` / `restore()`，由 `Main.persist_all()` / `Main.restore_all()` 逐个列出（fakelua 不能按字符串动态取跨包函数）。编排顺序有依赖——`World` 必须先于 `Bot` 恢复
+- [x] **入库判据固化**：判据是**值的来源**而非声明位置（详见 §7.5）。编译期常量与数字 / 布尔标量留在文件级；运行期字符串（解码 / 拼接）与 table / 容器 / 对象句柄一律入库，NativeObject 存对象本体而非壳（连接池、deque、PCG 随机流）
+- [x] **静态页目录跨帧失效（连带修复）**：`HttpStatic.web_dir` 在 `init` 里由配置赋值，是运行期字符串，跨帧后内容变垃圾，导致静态资源全 404（`/api/*` 走另一分支因而正常）。已在 `persist/restore` 中入库
+- [x] **对外 API 与帧边界函数重名（连带修复）**：`Backup.restore(v, actor)` 是 http 侧通过 `CallByName` 调用的对外接口，被同名的 0 参帧边界函数静默覆盖，备份还原报 `expects 0 argument(s), got 2` 回 500。该模块的帧边界函数改称 `frame_persist` / `frame_restore`；加帧边界函数前需先 `git show HEAD:<file> | grep '^function \(persist\|restore\)('` 查重名
+- [x] **MySQL 握手只在 update 帧推进**：连接池必须在 update 帧创建，并在创建的那一帧内循环 `runtime.tick()` 驱动到 `acquire` 成功（`DB.finish_connect()`，由主循环在 `runtime.tick()` 之后调用）——init 帧发起的异步握手跨帧后再也推不动，连接池对 `Connecting` 状态的连接不重连
+- [x] **TCC 后端保持禁用**：事件回调用 `DispatchEvent` 按 `JIT_TCC` 优先派发，一旦 TCC 副本存在，回调就跑在另一份编译产物上，看不到主循环状态（依赖回调写状态的模块会静默失效）。host 内已写明原因并 `disable_jit[JIT_TCC]=true`
+- [x] **入库自检**：临时在 `update` 里点名 85 个应有键，第 3 帧与第 1500 帧各查一次——两次缺失集合完全一致（均为功能未启用项：无 `data/motd.txt`、redis 关闭、webhook 未配 URL、定时备份 `interval_s: 0`），把这几项临时打开后缺失降到 3，反证不是漏入库
+
+> **实现注意**：`host/main.cpp` 里每帧一次顶层 Call 是整个方案的前提——fakelua 的 frame arena 只在顶层 Call 进入、重入计数归零时重置。资源占用实测见 §11。
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -610,6 +659,7 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**已通过**（三平台 CI 并行，run `38208038847`：Ubuntu 14m17s / macOS 21m01s / Windows 19m16s 全绿）
 21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**已通过**（run `38589359869`：三平台各执行 24 个用例、main / bots 两个 suite 均 passed、覆盖门禁 OK；本地清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致，`ci.yml` 三 job 各恰 2 次清单调用）
 22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）+ 凭证机制让战绩延续（账号写 MySQL、进历史榜、`localStorage` 存凭证复用同一游客）：**已通过**（run `38666766807`：三平台各执行 25 个用例全绿、0 FAIL、main/bots 两个 suite 均 passed；Ubuntu 侧 `test_guest.js` 17/17，其中「游客进历史榜」在服务端重启后的 bots 阶段仍能从 MySQL 读出 `游客2567` / `游客9950` / `游客7679`，证明游客账号确实落库而非只活在内存）
+23. **M23**：flua 生命周期与跨帧状态治理——宿主按 `init` / `update` / `fini` 驱动帧循环（每帧一次顶层 Call，frame arena 得以重置）、`store.lua` 作为跨帧状态唯一后端（NativeObject + JSON 桥接）、各模块 `persist` / `restore` 由主循环显式编排、入库判据按「值的来源」固化；资源实测见 §11：**本地 macOS 已通过**（`scripts/e2e-main.txt` 23 个用例 + `e2e-bots.txt` 2 个用例全绿，0 FAIL；85 个 Store 键在第 3 帧与第 1500 帧的缺失集合一致）；**三平台 CI 待跑**
 
 ---
 

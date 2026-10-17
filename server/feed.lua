@@ -140,3 +140,16 @@ function hotfix_restore(s)
     dq = s["dq"]
     capacity = s["capacity"]
 end
+
+-- ---- 帧边界持久化 ----
+-- deque 是 NativeObject（C++ 堆），本身不随 arena 消亡，但它在文件级 local 里的
+-- 壳会失效；每帧从 Store 取回即可，条目无需重编码。
+function persist()
+    Store.set("feed.dq", dq)
+    Store.set("feed.capacity", capacity)
+end
+
+function restore()
+    dq = Store.get("feed.dq")
+    capacity = Store.get("feed.capacity")
+end

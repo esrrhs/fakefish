@@ -114,3 +114,22 @@ function push()
         end
     end
 end
+
+-- ---- 帧边界持久化 ----
+-- udp socket 是 NativeObject；peers 以 "ip:port" 字符串为键，JSON 编码安全。
+function persist()
+    Store.set("metrics.udp", udp_obj)
+    Store.set("metrics.port", udp_port)
+    Store.set("metrics.interval_s", interval_s)
+    Store.set("metrics.tick_count", tick_count)
+    Store.set_json("metrics.peers", peers)
+end
+
+function restore()
+    udp_obj = Store.get("metrics.udp")
+    udp_port = Store.get("metrics.port")
+    interval_s = Store.get("metrics.interval_s")
+    tick_count = Store.get("metrics.tick_count")
+    peers = Store.get_json("metrics.peers")
+    if peers == nil then peers = {} end
+end

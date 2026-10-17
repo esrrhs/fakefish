@@ -485,3 +485,31 @@ function hotfix_restore(s)
     last_backup_ts = s["last_backup_ts"]
     last_backup_name = s["last_backup_name"]
 end
+
+-- ---- 帧边界持久化 ----
+-- 注意：本模块的帧边界函数**不能**叫 persist/restore —— `Backup.restore(v, actor)`
+-- 是对外的备份还原 API（http_static 通过 CallByName "Backup.restore" 调用），
+-- 若帧边界版本同名会在 Lua 里后者覆盖前者，导致还原接口报
+-- "expects 0 argument(s), got 2" 而回 500。故统一加 frame_ 前缀。
+-- rng 是 random NativeObject；其余是配置标量与调度时间戳。
+function frame_persist()
+    Store.set("backup.dir", dir)
+    Store.set("backup.key", key)
+    Store.set("backup.keep", keep)
+    Store.set("backup.rng", rng)
+    Store.set("backup.interval_s", interval_s)
+    Store.set("backup.next_ts", next_ts)
+    Store.set("backup.last_ts", last_backup_ts)
+    Store.set("backup.last_name", last_backup_name)
+end
+
+function frame_restore()
+    dir = Store.get("backup.dir")
+    key = Store.get("backup.key")
+    keep = Store.get("backup.keep")
+    rng = Store.get("backup.rng")
+    interval_s = Store.get("backup.interval_s")
+    next_ts = Store.get("backup.next_ts")
+    last_backup_ts = Store.get("backup.last_ts")
+    last_backup_name = Store.get("backup.last_name")
+end

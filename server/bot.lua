@@ -254,3 +254,35 @@ function hotfix_restore(s)
     end
     bots = list
 end
+
+-- ---- 帧边界持久化 ----
+-- bots 只存 pid 列表：机器人实体本身在 World 的 players 里（随 world 状态桥接），
+-- 每帧按 id 重新绑定，避免重复编码同一份玩家数据。
+function persist()
+    Store.set("bot.count", bot_count)
+    Store.set("bot.max_gold", bot_max_gold)
+    Store.set("bot.rng_ai", rng_ai)
+    local ids = {}
+    if bots ~= nil then
+        for i = 1, #bots do
+            if bots[i] ~= nil then ids[#ids + 1] = bots[i].id end
+        end
+    end
+    Store.set_json("bot.ids", ids)
+end
+
+function restore()
+    bot_count = Store.get("bot.count")
+    bot_max_gold = Store.get("bot.max_gold")
+    rng_ai = Store.get("bot.rng_ai")
+    local ids = Store.get_json("bot.ids")
+    local list = {}
+    if ids ~= nil then
+        local all = World.get_all_players()
+        for i = 1, #ids do
+            local p = all[ids[i]]
+            if p ~= nil then table.insert(list, p) end
+        end
+    end
+    bots = list
+end

@@ -101,3 +101,18 @@ function on_result(req, err, resp)
         print("[Webhook] delivered, status=" .. tostring(resp["status"]))
     end
 end
+
+-- ---- 帧边界持久化 ----
+function persist()
+    Store.set("webhook.url", hook_url)
+    Store.set("webhook.timeout_ms", timeout_ms)
+    Store.set("webhook.seq", seq)
+    Store.set_json("webhook.events_on", events_on)
+end
+
+function restore()
+    hook_url = Store.get("webhook.url")
+    timeout_ms = Store.get("webhook.timeout_ms")
+    seq = Store.get("webhook.seq")
+    events_on = Store.get_json("webhook.events_on")
+end

@@ -223,3 +223,15 @@ function hotfix_restore(s)
     db = s["db"]
     db_path = s["db_path"]
 end
+
+-- ---- 帧边界持久化 ----
+-- sqlite 连接是 NativeObject；审计链本身在库里，跨帧只需保住连接与路径。
+function persist()
+    Store.set("audit.db", db)
+    Store.set("audit.db_path", db_path)
+end
+
+function restore()
+    db = Store.get("audit.db")
+    db_path = Store.get("audit.db_path")
+end

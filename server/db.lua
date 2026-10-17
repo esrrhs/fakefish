@@ -1,7 +1,8 @@
 package "DB"
 
 local pool = nil
-local is_db_connected = false
+-- 是否已连上由 Store 的 "db.connected" 记录（跨帧存活），不设文件级标记：
+-- 文件级 local 若在 init 帧被写入运行期值，跨帧后就是悬垂内容。
 local in_memory_accounts = nil
 local db_state = nil
 
@@ -43,6 +44,30 @@ function init(cfg)
         cfg = {}
     end
 
+    -- 连接池不在 init 帧创建：init 是首个顶层 Call，在那里发起的 MySQL 异步握手
+    -- 跨帧后再也推进不了（连接卡在 Connecting，且池不会重连），acquire 永远返回 nil。
+    -- 实测把创建放到 update 帧即可正常连上，因此这里只登记配置。
+    Store.set_json("db.cfg", cfg)
+    Store.set("db.pool_tries", 0)
+    pool = nil
+end
+
+-- 在 update 帧建立连接池（带节流重试，MySQL 后启动时也能自行连上）。
+function ensure_pool()
+    if pool ~= nil then return end
+    if Store.get("db.pool_tries") == nil then return end
+
+    local tries = Store.get("db.pool_tries") or 0
+    if tries >= 10 then return end
+
+    local now = os.time()
+    local last = Store.get("db.pool_try_ts") or 0
+    if tries > 0 and now - last < 2 then return end
+    Store.set("db.pool_try_ts", now)
+
+    local cfg = Store.get_json("db.cfg")
+    if cfg == nil then return end
+
     local host = cfg["host"] or "127.0.0.1"
     local port = cfg["port"] or 3306
     local user = cfg["user"] or "root"
@@ -51,6 +76,7 @@ function init(cfg)
     local pool_size = cfg["pool_size"] or 2
     local heartbeat_ms = cfg["heartbeat_ms"] or 5000
 
+    Store.set("db.pool_tries", tries + 1)
     print("[DB] Initializing MySQL pool at " .. host .. ":" .. tostring(port) .. ", db=" .. db_name)
 
     local ok, res = pcall(function()
@@ -67,9 +93,32 @@ function init(cfg)
 
     if ok and res then
         pool = res
+        Store.set("db.pool", res)
         print("[DB] MySQL connection pool created.")
     else
         print("[DB] MySQL pool create skipped or failed, fallback to in-memory mode: " .. tostring(res))
+    end
+end
+
+-- 在 update 主体（runtime.tick 之后）驱动握手。
+-- fakelua 的 MySQL 握手由共享 IO 上下文推进，实测在跨模块 restore 的调用上下文里
+-- tick 推不动它，必须放在 update 主循环的 tick 之后。
+function finish_connect()
+    if pool == nil then return end
+    if Store.get("db.connected") == true then return end
+
+    local c = nil
+    for i = 1, 100 do
+        runtime.tick()
+        c = pool:acquire()
+        if c ~= nil then break end
+        os.sleep(2)
+    end
+
+    if c ~= nil then
+        pool:release(c)
+        Store.set("db.connected", true)
+        print("[DB] MySQL connection established.")
     end
 end
 
@@ -429,4 +478,29 @@ function get_top(limit)
         table.insert(out, top_cache.list[i])
     end
     return out
+end
+
+-- ---- 帧边界持久化 ----
+-- 连接池是 NativeObject：壳跨帧失效，必须存对象本身。内存账号表与登录流水线是
+-- VarTable，跨帧随 arena 消亡，走 JSON 桥接（账号以用户名字符串为键，编码安全）。
+function persist()
+    Store.set("db.pool", pool)
+    Store.set_json("db.in_memory_accounts", in_memory_accounts)
+    Store.set_json("db.db_state", db_state)
+    Store.set_json("db.top_cache", top_cache)
+    -- auth_pipe 的 current 持有在途查询上下文（connid / 账号名等纯数据），可安全编码
+    Store.set_json("db.auth_pipe", auth_pipe)
+end
+
+function restore()
+    pool = Store.get("db.pool")
+    -- 首帧（以及尚未连上的后续帧）建立连接池：必须发生在 update 上下文
+    ensure_pool()
+    in_memory_accounts = Store.get_json("db.in_memory_accounts")
+    if in_memory_accounts == nil then in_memory_accounts = {} end
+    db_state = Store.get_json("db.db_state")
+    if db_state == nil then db_state = { next_id = 900000 } end
+    top_cache = Store.get_json("db.top_cache")
+    auth_pipe = Store.get_json("db.auth_pipe")
+    if auth_pipe == nil then auth_pipe = { current = nil, queue = {} } end
 end

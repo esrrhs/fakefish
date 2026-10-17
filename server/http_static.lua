@@ -940,3 +940,20 @@ function init(cfg, log_cfg)
     print("[HttpStatic] HTTP server running on http://127.0.0.1:" .. tostring(port) .. " (serving " .. web_dir .. "/)")
     return true
 end
+
+-- ---- 帧边界持久化 ----
+-- http_srv 是 NativeObject（HTTP 服务句柄 + on_request 派发），每帧取回；
+-- protobuf schema 就绪标记与日志路径是标量。
+function persist()
+    Store.set("http.srv", http_srv)
+    Store.set("http.pbf_ready", pbf_ready)
+    Store.set("http.log_path", log_path)
+    Store.set("http.web_dir", web_dir)
+end
+
+function restore()
+    http_srv = Store.get("http.srv")
+    pbf_ready = Store.get("http.pbf_ready")
+    log_path = Store.get("http.log_path")
+    web_dir = Store.get("http.web_dir")
+end

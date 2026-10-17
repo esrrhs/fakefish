@@ -277,3 +277,59 @@ function global_top(limit)
     end
     return out
 end
+
+-- ---- 帧边界持久化 ----
+-- conn 是 NativeObject，不能进 JSON；seen 是「消息 id -> true」集合，转成数组保住键。
+function persist()
+    if state == nil then return end
+    Store.set("redis.conn", state.conn)
+    local seen = {}
+    if state.seen ~= nil then
+        for k, v in pairs(state.seen) do
+            seen[#seen + 1] = { k = k, v = v }
+        end
+    end
+    Store.set_json("redis.state", {
+        ready = state.ready,
+        enabled = state.enabled,
+        server_id = state.server_id,
+        seq = state.seq,
+        seen_count = state.seen_count,
+        chat_pending = state.chat_pending,
+        rank_pending = state.rank_pending,
+        poll_tick = state.poll_tick,
+        global_list = state.global_list,
+        seen_arr = seen
+    })
+end
+
+function restore()
+    local s = Store.get_json("redis.state")
+    -- 必须显式清空：跨帧后 state 是悬垂但非 nil 的指针，留着它后续访问会崩
+    if s == nil then
+        state = nil
+        return
+    end
+    local seen = {}
+    local arr = s["seen_arr"]
+    if arr ~= nil then
+        for i = 1, #arr do
+            local e = arr[i]
+            if e ~= nil then seen[e["k"]] = e["v"] end
+        end
+    end
+    state = {
+        ready = s["ready"],
+        enabled = s["enabled"],
+        conn = Store.get("redis.conn"),
+        server_id = s["server_id"],
+        seq = s["seq"],
+        seen = seen,
+        seen_count = s["seen_count"],
+        chat_pending = s["chat_pending"],
+        rank_pending = s["rank_pending"],
+        poll_tick = s["poll_tick"],
+        global_list = s["global_list"]
+    }
+    if state.global_list == nil then state.global_list = {} end
+end

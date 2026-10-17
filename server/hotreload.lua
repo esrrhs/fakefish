@@ -289,3 +289,23 @@ end
 function type_of(v)
     return type(v)
 end
+
+-- ---- 帧边界持久化 ----
+-- pending 是回调入队的热更请求（数组），watch_snapshots 是「模块名 -> 文件内容」。
+function persist()
+    Store.set("hotreload.token", admin_token)
+    Store.set("hotreload.watch_enable", watch_enable)
+    Store.set("hotreload.frame_count", frame_count)
+    Store.set_json("hotreload.pending", pending)
+    Store.set_json("hotreload.watch_snapshots", watch_snapshots)
+end
+
+function restore()
+    admin_token = Store.get("hotreload.token")
+    watch_enable = Store.get("hotreload.watch_enable")
+    frame_count = Store.get("hotreload.frame_count")
+    pending = Store.get_json("hotreload.pending")
+    if pending == nil then pending = {} end
+    watch_snapshots = Store.get_json("hotreload.watch_snapshots")
+    if watch_snapshots == nil then watch_snapshots = {} end
+end

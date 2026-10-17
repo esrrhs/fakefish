@@ -7,7 +7,8 @@ package "Ledger"
 
 local db = nil
 local insert_stmt = nil
-local ready = nil        -- 运行时标记表 { ok = bool }（避免文件级 bool 常量问题，直接用 nil 判断）
+-- 就绪判据是 db/insert_stmt 是否非 nil（见 is_ready()），两者都是 NativeObject 已入库；
+-- 不要再引入一个文件级「就绪标记」：它是 init 帧写入的运行期值，跨帧即失效。
 
 local SCHEMA_SQL =
 "CREATE TABLE IF NOT EXISTS events ("
@@ -168,4 +169,16 @@ function query_events(limit, kind)
         })
     end
     return out
+end
+
+-- ---- 帧边界持久化 ----
+-- sqlite 连接与预编译语句都是 NativeObject，每帧取回即可（连接状态在 C++ 侧）。
+function persist()
+    Store.set("ledger.db", db)
+    Store.set("ledger.stmt", insert_stmt)
+end
+
+function restore()
+    db = Store.get("ledger.db")
+    insert_stmt = Store.get("ledger.stmt")
 end

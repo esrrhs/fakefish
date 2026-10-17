@@ -400,3 +400,19 @@ function notify_died(victim_id, gold, x, y)
         ws_server_obj:send(p.connid, json_str)
     end
 end
+
+-- ---- 帧边界持久化 ----
+-- ws_server 是 NativeObject，事件回调（on_ev_*）与主循环都要用它发帧；壳跨帧失效，
+-- 因此每帧从 Store 取回。counters 是纯数据表，走 JSON。
+function persist()
+    Store.set("netws.server", ws_server_obj)
+    Store.set("netws.port", ws_port)
+    Store.set_json("netws.counters", counters)
+end
+
+function restore()
+    ws_server_obj = Store.get("netws.server")
+    ws_port = Store.get("netws.port")
+    counters = Store.get_json("netws.counters")
+    if counters == nil then counters = { recv = 0, sent = 0 } end
+end

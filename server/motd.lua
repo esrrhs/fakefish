@@ -108,3 +108,16 @@ function set(t)
     text = clean
     return true
 end
+
+-- ---- 帧边界持久化 ----
+function persist()
+    Store.set("motd.path", path)
+    Store.set("motd.max_len", max_len)
+    Store.set("motd.text", text)
+end
+
+function restore()
+    path = Store.get("motd.path")
+    max_len = Store.get("motd.max_len")
+    text = Store.get("motd.text")
+end

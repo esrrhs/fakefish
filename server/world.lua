@@ -222,6 +222,89 @@ function init(cfg)
           .. ", " .. tostring(max_food) .. " gold pellets, " .. tostring(powerup_count) .. " powerups")
 end
 
+-- ---- 帧边界持久化（flua 式生命周期）----
+--
+-- 每次 update 都是一次独立的顶层 Call，arena 在帧边界重置，所有 VarTable 随帧消亡。
+-- 因此世界状态在帧末编码进 Store（C++ 堆），帧初再解码回来。
+--
+-- 数字键的坑：players / conn_to_pid 等以 pid、connid 为键，而 JSON 对象键只能是
+-- 字符串，直接 encode 会把 12345 变成 "12345"，decode 回来用数字下标就取不到。
+-- 所以这类 map 统一转成 {k=键, v=值} 数组，restore 时按 k 重建（k 作为值保持数字）。
+
+local function map_to_arr(m)
+    local arr = {}
+    if m == nil then return arr end
+    local keys = {}
+    for k, v in pairs(m) do
+        keys[#keys + 1] = k
+    end
+    for i = 1, #keys do
+        local k = keys[i]
+        arr[#arr + 1] = { k = k, v = m[k] }
+    end
+    return arr
+end
+
+local function arr_to_map(arr)
+    local m = {}
+    if arr == nil then return m end
+    for i = 1, #arr do
+        local e = arr[i]
+        if e ~= nil then
+            m[e["k"]] = e["v"]
+        end
+    end
+    return m
+end
+
+-- 帧末：把本帧世界状态写入 Store
+function persist()
+    Store.set_json("world.players", map_to_arr(players))
+    Store.set_json("world.conn_to_pid", map_to_arr(conn_to_pid))
+    Store.set_json("world.pid_to_conn", map_to_arr(pid_to_conn))
+    Store.set_json("world.live_conns", map_to_arr(live_conns))
+    Store.set_json("world.pending_kicks", pending_kicks)
+    Store.set_json("world.pending_closes", pending_closes)
+    Store.set_json("world.pending_admin_kicks", pending_admin_kicks)
+    Store.set_json("world.pending_responses", pending_responses)
+    Store.set_json("world.food_coins", food_coins)
+    Store.set_json("world.powerups", powerups)
+    Store.set_json("world.bonus_food", bonus_food)
+    Store.set_json("world.world_events", world_events)
+    Store.set_json("world.chat_recent", chat_recent)
+    Store.set_json("world.zone", zone)
+    Store.set_json("world.game_cfg", game_cfg)
+    -- 标量：arena 不重置时也保留，但统一入库更稳（热更/异常路径都可复用）
+    Store.set("world.next_bot_id", next_bot_id)
+    Store.set("world.world_time", world_time)
+    -- PCG 随机流是 NativeObject，必须存对象本身（壳跨帧失效）
+    Store.set("world.rng_spawn", rng_spawn)
+    Store.set("world.rng_feast", rng_feast)
+end
+
+-- 帧初：把 Store 里的世界状态解码回帧内 table
+function restore()
+    players = arr_to_map(Store.get_json("world.players"))
+    conn_to_pid = arr_to_map(Store.get_json("world.conn_to_pid"))
+    pid_to_conn = arr_to_map(Store.get_json("world.pid_to_conn"))
+    live_conns = arr_to_map(Store.get_json("world.live_conns"))
+    pending_kicks = Store.get_json("world.pending_kicks") or {}
+    pending_closes = Store.get_json("world.pending_closes") or {}
+    pending_admin_kicks = Store.get_json("world.pending_admin_kicks") or {}
+    pending_responses = Store.get_json("world.pending_responses") or {}
+    food_coins = Store.get_json("world.food_coins") or {}
+    powerups = Store.get_json("world.powerups") or {}
+    bonus_food = Store.get_json("world.bonus_food") or {}
+    world_events = Store.get_json("world.world_events") or {}
+    chat_recent = Store.get_json("world.chat_recent") or {}
+    zone = Store.get_json("world.zone")
+    game_cfg = Store.get_json("world.game_cfg")
+    next_bot_id = Store.get("world.next_bot_id")
+    world_time = Store.get("world.world_time") or 0
+    rng_spawn = Store.get("world.rng_spawn")
+    rng_feast = Store.get("world.rng_feast")
+end
+
 -- 热更：保存全部运行时状态。
 -- 注意：必须用「空构造器 + 动态赋值」得到 plain table。静态 key 的构造器会被编译器
 -- 特化成 spec 表，其 get 函数在本模块 .so 里——.so 卸载后，新代码读这张快照就会跳进

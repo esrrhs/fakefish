@@ -436,3 +436,22 @@ function tick()
     -- 连接暂不可用导致入队时没发出去的查询，这里每帧重试；空闲时立即返回
     DB.pump_auth()
 end
+
+-- ---- 帧边界持久化 ----
+-- 每次 update 是独立顶层 Call，文件级 local 里的 VarTable / NativeObject 壳在帧末
+-- 即失效，因此状态统一落 Store（C++ 堆），帧初再取回。
+function persist()
+    Store.set("auth.guest_enabled", guest_enabled)
+    Store.set("auth.guest_auto_enter", guest_auto_enter)
+    Store.set("auth.guest_prefix", guest_prefix)
+    Store.set("auth.guest_secret", guest_secret)
+    Store.set("auth.guest_rng", guest_rng)
+end
+
+function restore()
+    guest_enabled = Store.get("auth.guest_enabled")
+    guest_auto_enter = Store.get("auth.guest_auto_enter")
+    guest_prefix = Store.get("auth.guest_prefix")
+    guest_secret = Store.get("auth.guest_secret")
+    guest_rng = Store.get("auth.guest_rng")
+end
