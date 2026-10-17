@@ -584,6 +584,14 @@ function add_player(connid, account)
     if prev_conn ~= nil and prev_conn ~= connid then
         table.insert(pending_kicks, prev_conn)
         conn_to_pid[prev_conn] = nil
+        -- 必须从 live_conns 摘掉：解除 conn_to_pid 后，这条旧连接在
+        -- get_idle_unauth_conns 眼里已经等同于「只建连不登录」，而它往往已建连
+        -- 几十秒，会立刻被 kick_idle 当作未登录空闲连接直接 close_connection。
+        -- 那样主循环两阶段流程里的 error 帧（账号已在别处登录）会随连接一起被
+        -- 丢弃，客户端只收到裸断开——快机器上 flush_kicks 先跑完侥幸不触发，
+        -- 慢机器上 kick_idle 与它同帧命中就必现。这里摘除后，旧连接只走
+        -- pending_kicks：本帧发 error，下一帧才断开。
+        unmark_conn(prev_conn)
     end
 
     -- 会话冲突处理 2：同一连接此前在玩另一个账号 → 旧账号先落盘离场，
