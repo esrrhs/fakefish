@@ -187,14 +187,24 @@ function update()
     local save_interval_s = Store.get("main.save_interval_s") or 20
     local frame = (Store.get("main.frame") or 0) + 1
 
-    -- 步长就用配置的理论值（固定步长）。
-    -- 曾尝试按实测帧率反推 dt 并切子步，让世界在慢机器上也按真实时间推进，但代价
-    -- 是单帧物理开销成倍增加：帧率越低 dt 越大、子步越多，反而把帧率进一步压低
-    -- （CI 的 macOS runner 上机器人阶段从约 1fps 掉到约 0.3fps，test_bots 的
-    -- 「6s 内至少 5 个快照」因此失败）。而真正必须跟住真实时间的是踢空闲连接、
-    -- 缩圈、落盘这类墙钟任务，它们已改由 timer 心跳驱动（见下），不依赖 dt。
-    -- 世界速度随帧率变慢是既有标定行为，所有时序用例都按它标定，故保持固定步长。
+    -- 实际步长按【实测帧率】反推：帧率掉到 1/N 时步长放大到 N 倍，
+    -- 保证世界推进速度仍约等于真实时间（1.0 s/s）。只在慢于理论帧率时放大，
+    -- 并 clamp 上限，避免卡顿后出现超大步长导致穿模/漏吃。
+    --
+    -- 权衡：放大 dt 会让单帧物理开销成倍增加（帧率越低子步越多），是个正反馈，
+    -- 在慢机器robot密集阶段会进一步压低帧率。但去掉它世界就退回到「随帧率变慢」，
+    -- CI 的 macOS runner 上猎人体型会长不到吞噬阈值（r 差 0.9）而超时失败——
+    -- 实测「保留放大 + 子步」的组合能通过，去掉则失败。故保留，代价由
+    -- test_bots 的等待窗口放宽来吸收（见 test_bots.js）。
     local dt = dt_theory
+    local fps = Store.get("main.fps")
+    if fps ~= nil and fps > 0 then
+        local measured = 1.0 / fps
+        if measured > dt then dt = measured end
+        -- 上限 0.5s：配合下面的子步切分，即使掉到 2fps 世界速度仍跟得住，
+        -- 且不会因为单步过大而穿模。
+        if dt > 0.5 then dt = 0.5 end
+    end
 
     Store.set("main.frame", frame)
 
@@ -275,8 +285,23 @@ function update()
     -- 机器人 AI 决策（写移动意图，物理结算仍在 World.update）
     Bot.update(dt)
 
-    -- 物理与规则计算（固定步长，单步）
-    local eat_events, died_events, powerup_events = World.update(dt)
+    -- 物理与规则计算。
+    -- 慢机器上单帧耗时可能远超 tick_ms（CI 的 macOS runner 实测只有 3~4fps），
+    -- 此时若一次性推进放大后的 dt，单步位移会大于拾取半径，出现穿模/漏吃豆；
+    -- 故把本帧的世界时间切成 ≤50ms 的子步：世界速度仍跟住真实时间，步长保持精细。
+    local eat_events = {}
+    local died_events = {}
+    local powerup_events = {}
+    local steps = math.floor(dt / 0.05) + 1
+    if steps < 1 then steps = 1 end
+    if steps > 20 then steps = 20 end
+    local sub_dt = dt / steps
+    for si = 1, steps do
+        local se, sd, sp = World.update(sub_dt)
+        for i = 1, #se do eat_events[#eat_events + 1] = se[i] end
+        for i = 1, #sd do died_events[#died_events + 1] = sd[i] end
+        for i = 1, #sp do powerup_events[#powerup_events + 1] = sp[i] end
+    end
 
     -- 吞噬与复活事件：统一经事件总线派发。
     -- NetWs 负责 WS 广播；Ledger 记 full 击杀流水；Webhook 出站推送 full 击杀。
@@ -316,9 +341,9 @@ function fini()
 end
 
 -- timer 心跳回调（fakelua 按函数名派发；C++ 上下文，只做世界状态变更）
--- 同时统计【实测】帧率，主循环用它打慢帧告警（<5fps 时每秒一条）。
--- 帧率是容量信号：CI 的共享 runner 上实测只有 1~2fps，客户端控制类用例
--- （吞噬/道具/机器人移动）会因快照过稀而超时，日志里要能一眼看见。
+-- 同时统计【实测】帧率：慢机器上每帧耗时会显著高于 tick_ms，若仍按理论 dt
+-- 推进世界，世界速度就会随帧率一起变慢（CI macOS runner 上实测只有 ~4fps，
+-- 世界会慢到 1/5，所有时序用例都会超时）。故在心跳里测帧率，由主循环反推 dt。
 function on_heartbeat(type, timer_id)
     World.on_heartbeat()
 
