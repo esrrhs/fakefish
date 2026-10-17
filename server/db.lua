@@ -103,9 +103,32 @@ end
 -- 在 update 主体（runtime.tick 之后）驱动握手。
 -- fakelua 的 MySQL 握手由共享 IO 上下文推进，实测在跨模块 restore 的调用上下文里
 -- tick 推不动它，必须放在 update 主循环的 tick 之后。
+-- 握手重试预算：连接池握手是异步的，必须靠 runtime.tick() 推进，单次 acquire
+-- 基本拿不到，所以要有界循环「tick + acquire + 让出」。但绝不能每帧都跑满这个
+-- 循环——MySQL 根本不存在时 db.connected 永远为 false，100 次循环会逐帧重跑，
+-- 把帧时间顶到秒级（CI 的 macOS job 不启 MySQL，实测帧率掉到约 0.5fps），
+-- 帧率一崩，踢空闲连接、缩圈、吞噬等所有时序用例连锁超时。
+-- 故给「有界握手」设次数上限，超预算后降级为每帧一次轻量探测。
+local MAX_HANDSHAKE_ATTEMPTS = 10
+
 function finish_connect()
     if pool == nil then return end
     if Store.get("db.connected") == true then return end
+
+    local tries = Store.get("db.connect_tries") or 0
+    if tries >= MAX_HANDSHAKE_ATTEMPTS then
+        -- 超预算：只做一次 acquire 探测（不 tick、不 sleep），
+        -- MySQL 后续上线仍能接上，但不再拖慢帧率。
+        local c = pool:acquire()
+        if c ~= nil then
+            pool:release(c)
+            Store.set("db.connected", true)
+            print("[DB] MySQL connection established.")
+        end
+        return
+    end
+
+    Store.set("db.connect_tries", tries + 1)
 
     local c = nil
     for i = 1, 100 do
@@ -119,6 +142,9 @@ function finish_connect()
         pool:release(c)
         Store.set("db.connected", true)
         print("[DB] MySQL connection established.")
+    elseif tries + 1 >= MAX_HANDSHAKE_ATTEMPTS then
+        print("[DB] MySQL unreachable after " .. tostring(MAX_HANDSHAKE_ATTEMPTS)
+              .. " handshake attempts, running in memory-only mode.")
     end
 end
 

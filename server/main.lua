@@ -236,6 +236,13 @@ function update()
     -- dt 累加会让慢机器上的「每秒任务」被拉长到数秒一次，连接超时踢人这类
     -- 有时限的用例就会失败（CI macOS runner 上实测帧率仅 ~4fps）。
     if World.pop_sec_tick() then
+        -- 帧率告警：低于 5fps 说明主循环被某个环节拖住（如 MySQL 握手重试），
+        -- 墙钟任务虽由心跳兜住，但客户端控制类用例（吞噬/道具）会因快照过稀而超时。
+        local cur_fps = Store.get("main.fps")
+        if cur_fps ~= nil and cur_fps > 0 and cur_fps < 5 then
+            print("[Main] WARNING slow loop: " .. tostring(cur_fps) .. " fps")
+        end
+
         NetWs.kick_idle(conn_timeout_s)
         -- Redis 拉取跨服聊天/同步排行（内部自行节流）；UDP 指标推送
         RedisStore.tick()
