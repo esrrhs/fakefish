@@ -1285,6 +1285,22 @@ function pop_feast_due()
     return true
 end
 
+-- 主循环读取并清除「每秒一次」标记：踢空闲连接 / 落盘 / 指标推送等墙钟任务
+-- 都由它驱动。用心跳置位而不是主循环里累加 dt —— 慢机器上帧率会掉，
+-- dt 累加会让「每秒任务」变成几秒一次。
+function pop_sec_tick()
+    if world_events == nil or world_events.sec_tick ~= true then return false end
+    world_events.sec_tick = false
+    return true
+end
+
+-- 心跳累计秒数（真实时间，供主循环做周期调度）
+function get_sec()
+    if world_events == nil then return 0 end
+    if world_events.sec == nil then return 0 end
+    return world_events.sec
+end
+
 -- ---- 安全区收缩（由 timer 心跳驱动） ----
 
 -- 主循环读取并清除安全区变化标记
@@ -1311,7 +1327,9 @@ end
 -- 回调上下文只做运行时表的字段写（已验证类别），不创建跨帧 table、不做 ws 发送
 function on_heartbeat()
     if world_events == nil then return end
+    if world_events.sec == nil then world_events.sec = 0 end
     world_events.sec = world_events.sec + 1
+    world_events.sec_tick = true
 
     if world_events.sec % 5 == 0 then
         DB.tick_refresh()

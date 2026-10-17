@@ -106,8 +106,9 @@ function init(config_path)
     Store.set("main.conn_timeout_s", conn_timeout_s)
     Store.set("main.save_interval_s", save_interval_s)
     Store.set("main.frame", 0)
-    Store.set("main.kick_acc", 0)
-    Store.set("main.save_acc", 0)
+    -- main.fps / main.fps_mark_frame：心跳里统计的实测帧率（用于反推真实步长）
+    Store.set("main.fps", 0)
+    Store.set("main.fps_mark_frame", 0)
 
     print("[Main] Server loop started: " .. tostring(1000 / tick_ms) .. "Hz (tick=" .. tostring(tick_ms) .. "ms)")
     print("[Main] Access game at: http://127.0.0.1:" .. tostring(srv_cfg["http_port"] or 8080))
@@ -181,12 +182,23 @@ function update()
     restore_all()
 
     local tick_ms = Store.get("main.tick_ms") or 50
-    local dt = Store.get("main.dt") or 0.05
+    local dt_theory = Store.get("main.dt") or 0.05
     local conn_timeout_s = Store.get("main.conn_timeout_s") or 15
     local save_interval_s = Store.get("main.save_interval_s") or 20
     local frame = (Store.get("main.frame") or 0) + 1
-    local kick_acc = Store.get("main.kick_acc") or 0
-    local save_acc = Store.get("main.save_acc") or 0
+
+    -- 实际步长按【实测帧率】反推：帧率掉到 1/N 时步长放大到 N 倍，
+    -- 保证世界推进速度仍约等于真实时间（1.0 s/s）。只在慢于理论帧率时放大，
+    -- 并 clamp 上限，避免卡顿后出现超大步长导致穿模/漏吃。
+    local dt = dt_theory
+    local fps = Store.get("main.fps")
+    if fps ~= nil and fps > 0 then
+        local measured = 1.0 / fps
+        if measured > dt then dt = measured end
+        -- 上限放宽到 0.5s：配合下面的子步切分，即使掉到 2fps 世界速度仍跟得住，
+        -- 且不会因为单步过大而穿模。
+        if dt > 0.5 then dt = 0.5 end
+    end
 
     Store.set("main.frame", frame)
 
@@ -220,10 +232,10 @@ function update()
         end
     end
 
-    -- 每秒一次：踢掉心跳超时的空闲连接（按累计时间判定，不依赖固定帧率）
-    kick_acc = kick_acc + dt
-    if kick_acc >= 1.0 then
-        kick_acc = 0
+    -- 每秒一次的墙钟任务：由 timer 心跳置位（真实时间），不用 dt 累加——
+    -- dt 累加会让慢机器上的「每秒任务」被拉长到数秒一次，连接超时踢人这类
+    -- 有时限的用例就会失败（CI macOS runner 上实测帧率仅 ~4fps）。
+    if World.pop_sec_tick() then
         NetWs.kick_idle(conn_timeout_s)
         -- Redis 拉取跨服聊天/同步排行（内部自行节流）；UDP 指标推送
         RedisStore.tick()
@@ -237,16 +249,16 @@ function update()
                 pcall(function() log.error("[backup] scheduled create failed: " .. tostring(info)) end)
             end
         end
-    end
-    Store.set("main.kick_acc", kick_acc)
 
-    -- 周期落盘在线玩家金币（按累计时间调度，0 或负值关闭）
-    save_acc = save_acc + dt
-    if save_interval_s > 0 and save_acc >= save_interval_s then
-        save_acc = 0
-        World.flush_online_gold()
+        -- 周期落盘在线玩家金币（按心跳秒数调度，0 或负值关闭）
+        local sec = World.get_sec()
+        local last_save_sec = Store.get("main.last_save_sec")
+        if last_save_sec == nil then last_save_sec = sec end
+        if save_interval_s > 0 and (sec - last_save_sec) >= save_interval_s then
+            Store.set("main.last_save_sec", sec)
+            World.flush_online_gold()
+        end
     end
-    Store.set("main.save_acc", save_acc)
 
     -- 发送登录响应（通过 p.connid，与 broadcast 同路径，确保跨平台一致）
     NetWs.flush_login_responses()
@@ -260,8 +272,23 @@ function update()
     -- 机器人 AI 决策（写移动意图，物理结算仍在 World.update）
     Bot.update(dt)
 
-    -- 物理与规则计算
-    local eat_events, died_events, powerup_events = World.update(dt)
+    -- 物理与规则计算。
+    -- 慢机器上单帧耗时可能远超 tick_ms（CI 的 macOS runner 实测只有 3~4fps），
+    -- 此时若一次性推进放大后的 dt，单步位移会大于拾取半径，出现穿模/漏吃豆；
+    -- 故把本帧的世界时间切成 ≤50ms 的子步：世界速度仍跟住真实时间，步长保持精细。
+    local eat_events = {}
+    local died_events = {}
+    local powerup_events = {}
+    local steps = math.floor(dt / 0.05) + 1
+    if steps < 1 then steps = 1 end
+    if steps > 20 then steps = 20 end
+    local sub_dt = dt / steps
+    for si = 1, steps do
+        local se, sd, sp = World.update(sub_dt)
+        for i = 1, #se do eat_events[#eat_events + 1] = se[i] end
+        for i = 1, #sd do died_events[#died_events + 1] = sd[i] end
+        for i = 1, #sp do powerup_events[#powerup_events + 1] = sp[i] end
+    end
 
     -- 吞噬与复活事件：统一经事件总线派发。
     -- NetWs 负责 WS 广播；Ledger 记 full 击杀流水；Webhook 出站推送 full 击杀。
@@ -301,6 +328,19 @@ function fini()
 end
 
 -- timer 心跳回调（fakelua 按函数名派发；C++ 上下文，只做世界状态变更）
+-- 同时统计【实测】帧率：慢机器上每帧耗时会显著高于 tick_ms，若仍按理论 dt
+-- 推进世界，世界速度就会随帧率一起变慢（CI macOS runner 上实测只有 ~4fps，
+-- 世界会慢到 1/5，所有时序用例都会超时）。故在心跳里测帧率，由主循环反推 dt。
 function on_heartbeat(type, timer_id)
     World.on_heartbeat()
+
+    local f = Store.get("main.frame")
+    local mark = Store.get("main.fps_mark_frame")
+    if f ~= nil and mark ~= nil then
+        local fps = f - mark
+        if fps > 0 and fps < 1000 then
+            Store.set("main.fps", fps)
+        end
+    end
+    Store.set("main.fps_mark_frame", f)
 end
