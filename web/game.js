@@ -84,9 +84,12 @@
             return;
         }
 
-        const wsPort = window.location.port ? 8081 : 8081;
+        // https 页面下浏览器禁止 ws:// 明文混合内容，必须走同域 wss 反代
+        // （nginx: location /ws → 127.0.0.1:8081）；本地 http 直连 8081。
         const wsHost = window.location.hostname || "127.0.0.1";
-        const wsUrl = `ws://${wsHost}:${wsPort}/`;
+        const wsUrl = window.location.protocol === "https:"
+            ? `wss://${wsHost}/ws`
+            : `ws://${wsHost}:8081/`;
 
         ws = new WebSocket(wsUrl);
         serverKickReason = "";
