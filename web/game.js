@@ -11,21 +11,19 @@
     let powerups = []; // [ { x, y, kind } ]
     let camera = { x: 1000, y: 1000 };
     let isConnected = false;
-    let authMode = "login"; // 'login' / 'register' / 'guest'
     let zone = null; // { x, y, r, phase, holding, next_in }
     let serverKickReason = ""; // 服务端 error 帧携带的原因（如同账号在别处登录），随后连接会被断开
     let guestCred = null; // 本地保存的游客凭证 {name, token}，用于下次复用同一游客
+
+    // 全游客模式：没有账号/密码表单，进场一律走 type=guest
+    const ENTER_BTN_IDLE = "进入竞技场";
+    const ENTER_BTN_BUSY = "正在进入...";
 
     // DOM 元素
     const canvas = document.getElementById("game-canvas");
     const ctx = canvas.getContext("2d");
     const authModal = document.getElementById("auth-modal");
-    const tabLogin = document.getElementById("tab-login");
-    const tabRegister = document.getElementById("tab-register");
-    const authUsernameInput = document.getElementById("auth-username");
-    const authPasswordInput = document.getElementById("auth-password");
     const btnSubmit = document.getElementById("btn-submit");
-    const btnGuest = document.getElementById("btn-guest");
     const authError = document.getElementById("auth-error");
 
     const hud = document.getElementById("hud");
@@ -79,53 +77,10 @@
         floatingTexts.push({ text, x, y, alpha: 1.0, color, size, vy: -1.2 });
     }
 
-    // 标签页切换
-    tabLogin.addEventListener("click", () => {
-        authMode = "login";
-        tabLogin.classList.add("active");
-        tabRegister.classList.remove("active");
-        btnSubmit.innerText = "进入竞技场";
-        authError.classList.add("hidden");
-    });
-
-    tabRegister.addEventListener("click", () => {
-        authMode = "register";
-        tabRegister.classList.add("active");
-        tabLogin.classList.remove("active");
-        btnSubmit.innerText = "注册并进场";
-        authError.classList.add("hidden");
-    });
-
-    // 提交认证
-    btnSubmit.addEventListener("click", handleAuthSubmit);
-    authPasswordInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") handleAuthSubmit();
-    });
-
-    function handleAuthSubmit() {
-        if (authMode === "guest") return;
-
-        const username = authUsernameInput.value.trim();
-        const password = authPasswordInput.value.trim();
-
-        if (!username || !password) {
-            authError.innerText = "请输入用户名和密码";
-            authError.classList.remove("hidden");
-            return;
-        }
-
-        myName = username;
-        authError.classList.add("hidden");
-        btnSubmit.disabled = true;
-        btnSubmit.innerText = "连接中...";
-
-        connectWebSocket(username, password);
-    }
-
     // 连接 WebSocket
-    function connectWebSocket(username, password) {
+    function connectWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            sendAuth(username, password);
+            sendAuth();
             return;
         }
 
@@ -138,7 +93,7 @@
 
         ws.onopen = () => {
             isConnected = true;
-            sendAuth(username, password);
+            sendAuth();
         };
 
         ws.onmessage = (event) => {
@@ -153,7 +108,7 @@
         ws.onclose = () => {
             isConnected = false;
             btnSubmit.disabled = false;
-            btnSubmit.innerText = authMode === "login" ? "进入竞技场" : "注册并进场";
+            btnSubmit.innerText = ENTER_BTN_IDLE;
             // 被服务端主动踢除（如同账号在别处登录）时展示具体原因，否则只提示断线
             const closeMsg = serverKickReason || "与服务器连接已断开";
             showToast(closeMsg, "danger");
@@ -177,16 +132,17 @@
             console.error("WebSocket error:", err);
             authError.innerText = "连接服务器失败，请确认服务已启动 (8081)";
             authError.classList.remove("hidden");
+            authModal.classList.remove("hidden");
             btnSubmit.disabled = false;
-            btnSubmit.innerText = authMode === "login" ? "进入竞技场" : "注册并进场";
+            btnSubmit.innerText = ENTER_BTN_IDLE;
         };
     }
 
-    function sendAuth(username, password) {
-        // 游客模式：没有凭证时由服务端生成昵称；有凭证则带回以复用同一游客
-        const payload = authMode === "guest"
-            ? (guestCred ? { type: "guest", name: guestCred.name, token: guestCred.token } : { type: "guest" })
-            : { type: authMode, username: username, password: password };
+    function sendAuth() {
+        // 没有凭证时由服务端生成昵称；有凭证则带回以复用同一游客、延续战绩
+        const payload = guestCred
+            ? { type: "guest", name: guestCred.name, token: guestCred.token }
+            : { type: "guest" };
         ws.send(JSON.stringify(payload));
     }
 
@@ -206,12 +162,11 @@
 
     // 以游客身份进场（昵称由服务端按 guest.prefix 生成；有本地凭证则复用）
     function enterAsGuest() {
-        authMode = "guest";
         guestCred = loadGuestCred();
         authError.classList.add("hidden");
         btnSubmit.disabled = true;
-        btnSubmit.innerText = "正在进入...";
-        connectWebSocket(null, null);
+        btnSubmit.innerText = ENTER_BTN_BUSY;
+        connectWebSocket();
     }
 
     // 协议消息处理
@@ -242,10 +197,11 @@
 
             case "login_fail":
             case "register_fail":
-                authError.innerText = msg.reason || "操作失败";
+                // 全游客模式下服务端不该回这两个，留着兜底：真回了就把原因显示出来
+                authError.innerText = msg.reason || "进场失败";
                 authError.classList.remove("hidden");
                 btnSubmit.disabled = false;
-                btnSubmit.innerText = authMode === "login" ? "进入竞技场" : "注册并进场";
+                btnSubmit.innerText = ENTER_BTN_IDLE;
                 break;
 
             case "rank":
@@ -1007,35 +963,18 @@
         return "#" + ((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
     }
 
-    // 登录框里的「游客试玩」
-    btnGuest.addEventListener("click", () => {
+    // 遮罩上的按钮即「以游客身份进场」；断线后也用它重试
+    btnSubmit.addEventListener("click", () => {
+        if (btnSubmit.disabled) return;
         authModal.classList.add("hidden");
         enterAsGuest();
     });
 
     // ---- 启动引导 ----
-    // 先同步隐藏登录框，避免自动游客进场时登录界面闪一下；拿不到 /api/guest
-    // （旧版服务端或请求失败）时回退到原来的登录/注册流程。
+    // 全游客模式：打开页面直接以游客身份进场，遮罩默认隐藏（连接失败/断线时由
+    // onerror / onclose 重新露出）。
     authModal.classList.add("hidden");
-
-    function bootstrap() {
-        const forceLogin = new URLSearchParams(location.search).get("login") === "1";
-        fetch("/api/guest")
-            .then((r) => (r.ok ? r.json() : null))
-            .then((cfg) => {
-                const guestOn = !!(cfg && cfg.enabled);
-                if (guestOn) btnGuest.classList.remove("hidden");
-                if (guestOn && cfg.auto_enter && !forceLogin) {
-                    enterAsGuest();
-                    return;
-                }
-                authModal.classList.remove("hidden");
-            })
-            .catch(() => {
-                authModal.classList.remove("hidden");
-            });
-    }
-    bootstrap();
+    enterAsGuest();
 
     // 启动动画循环
     renderLoop();

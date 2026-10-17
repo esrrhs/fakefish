@@ -77,33 +77,16 @@
         <!-- 提示消息通知浮窗 -->
         <div id="notification-box"></div>
 
-        <!-- 登录 / 注册模态窗口 -->
+        <!-- 进场遮罩：全游客模式，没有账号/密码表单。打开页面即以游客身份进场，
+             遮罩只在连接建立前、断线后或服务端拒绝时露出，按钮用于重试。 -->
         <div id="auth-modal" class="modal">
             <div class="modal-content">
                 <h1 class="logo-title">🪙 FakeFish 🐟</h1>
                 <p class="subtitle">FakeLua 驱动的大鱼吃小鱼实时 PVP 沙盒</p>
 
-                <div class="tabs">
-                    <button id="tab-login" class="tab-btn active">登录</button>
-                    <button id="tab-register" class="tab-btn">注册</button>
-                </div>
-
-                <div class="form-group">
-                    <label for="auth-username">账号名称</label>
-                    <input type="text" id="auth-username" maxlength="20" placeholder="请输入用户名 (英文/数字)" autocomplete="off">
-                </div>
-
-                <div class="form-group">
-                    <label for="auth-password">登录密码</label>
-                    <input type="password" id="auth-password" placeholder="请输入密码">
-                </div>
-
                 <div id="auth-error" class="error-msg hidden"></div>
 
                 <button id="btn-submit" class="primary-btn">进入竞技场</button>
-
-                <!-- 游客试玩：服务端 guest.enabled=false 时由前端保持隐藏 -->
-                <button id="btn-guest" class="guest-btn hidden">🎮 游客试玩（无需注册）</button>
 
                 <div class="guide-tip">
                     <p>🎮 <strong>操作指南</strong>：方向键 / WASD 移动；或鼠标指向方向移动。</p>
