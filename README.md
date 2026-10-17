@@ -632,6 +632,10 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 - [x] **MySQL 握手只在 update 帧推进**：连接池必须在 update 帧创建，并在创建的那一帧内循环 `runtime.tick()` 驱动到 `acquire` 成功（`DB.finish_connect()`，由主循环在 `runtime.tick()` 之后调用）——init 帧发起的异步握手跨帧后再也推不动，连接池对 `Connecting` 状态的连接不重连
 - [x] **TCC 后端保持禁用**：事件回调用 `DispatchEvent` 按 `JIT_TCC` 优先派发，一旦 TCC 副本存在，回调就跑在另一份编译产物上，看不到主循环状态（依赖回调写状态的模块会静默失效）。host 内已写明原因并 `disable_jit[JIT_TCC]=true`
 - [x] **入库自检**：临时在 `update` 里点名 85 个应有键，第 3 帧与第 1500 帧各查一次——两次缺失集合完全一致（均为功能未启用项：无 `data/motd.txt`、redis 关闭、webhook 未配 URL、定时备份 `interval_s: 0`），把这几项临时打开后缺失降到 3，反证不是漏入库
+- [x] **墙钟任务改由 timer 心跳驱动**：踢空闲连接 / 落盘 / 指标推送 / 定时备份原先靠主循环累加 dt 触发，帧率一掉这些「每秒任务」就被整体拉长（有时限的用例会超时）。改由心跳按真实时间置位 `World.pop_sec_tick()` 驱动
+- [x] **顶号让位的旧连接不再被误判为未登录空闲连接**：同账号新会话登录时旧连接会被解除 `conn_to_pid` 映射，此后它在 `get_idle_unauth_conns` 眼里等同于「只建连不登录」，会被 `kick_idle` 抢在 `flush_kicks` 之前断开，排队中的「账号已在别处登录」error 帧随连接一起丢失。让位时同步 `unmark_conn`
+- [x] **MySQL 连不上时握手重试不再逐帧跑满**：`DB.finish_connect()` 的有界握手循环（100 次 `tick + acquire + sleep`）只在 `db.connected` 为真时跳过，MySQL 根本不存在时会每帧重跑，把帧率压到 ~0.5fps。现在给重试设 10 次预算，超预算后降级为每帧一次轻量探测
+- [x] **慢帧告警**：心跳统计实测帧率，低于 5fps 时每秒打一条 `[Main] WARNING slow loop` —— 帧率是容量信号，这类「主循环被某个环节拖住」的问题在日志里能直接看见
 
 > **实现注意**：`host/main.cpp` 里每帧一次顶层 Call 是整个方案的前提——fakelua 的 frame arena 只在顶层 Call 进入、重入计数归零时重置。资源占用实测见 §11。
 
@@ -659,7 +663,7 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 20. **M20**：Windows 移植——MSYS2 MINGW64 工具链（与 fakelua 上游一致，非 MSVC）构建宿主、24 个 E2E 全清单在 windows-2022 跑通，admin 白名单支持按平台 argv，三平台（Ubuntu/macOS/Windows）CI 并行：**已通过**（三平台 CI 并行，run `38208038847`：Ubuntu 14m17s / macOS 21m01s / Windows 19m16s 全绿）
 21. **M21**：CI 收尾——24 个 E2E 的调用序列收敛为 `scripts/e2e-main.txt` / `e2e-bots.txt` 单一真源（三平台 CI 共用），`check_e2e_coverage.sh` 双向覆盖门禁防用例漏登，macOS / Ubuntu 超时预算 30 → 45 分钟：**已通过**（run `38589359869`：三平台各执行 24 个用例、main / bots 两个 suite 均 passed、覆盖门禁 OK；本地清单 22 + 2 = 24 与磁盘 `test_*.js` 数一致，`ci.yml` 三 job 各恰 2 次清单调用）
 22. **M22**：游客登录（免注册即玩）——`guest` 协议帧 + 前端打开即以游客自动进场（`GET /api/guest` 驱动，`?login=1` 唤出登录框）+ 凭证机制让战绩延续（账号写 MySQL、进历史榜、`localStorage` 存凭证复用同一游客）：**已通过**（run `38666766807`：三平台各执行 25 个用例全绿、0 FAIL、main/bots 两个 suite 均 passed；Ubuntu 侧 `test_guest.js` 17/17，其中「游客进历史榜」在服务端重启后的 bots 阶段仍能从 MySQL 读出 `游客2567` / `游客9950` / `游客7679`，证明游客账号确实落库而非只活在内存）
-23. **M23**：flua 生命周期与跨帧状态治理——宿主按 `init` / `update` / `fini` 驱动帧循环（每帧一次顶层 Call，frame arena 得以重置）、`store.lua` 作为跨帧状态唯一后端（NativeObject + JSON 桥接）、各模块 `persist` / `restore` 由主循环显式编排、入库判据按「值的来源」固化；资源实测见 §11：**本地 macOS 已通过**（`scripts/e2e-main.txt` 23 个用例 + `e2e-bots.txt` 2 个用例全绿，0 FAIL；85 个 Store 键在第 3 帧与第 1500 帧的缺失集合一致）；**三平台 CI 待跑**
+23. **M23**：flua 生命周期与跨帧状态治理——宿主按 `init` / `update` / `fini` 驱动帧循环（每帧一次顶层 Call，frame arena 得以重置）、`store.lua` 作为跨帧状态唯一后端（NativeObject + JSON 桥接）、各模块 `persist` / `restore` 由主循环显式编排、入库判据按「值的来源」固化；资源实测见 §11：**已通过**（run `39002672539`：三平台各执行 23 + 2 个用例全绿、0 FAIL，main / bots 两个 suite 均 passed，本地 macOS 侧 85 个 Store 键在第 3 帧与第 1500 帧的缺失集合一致）。过程中修掉三个真 bug：墙钟任务改由 timer 心跳驱动（帧率不再拉伸踢人/落盘/缩圈的周期）、顶号让位的旧连接不再被当作未登录空闲连接抢先断开（否则「账号已在别处登录」通知会随连接一起丢失）、MySQL 连不上时握手重试不再逐帧跑满 100 次（该循环曾把无 MySQL 环境的帧率压到 ~0.5fps）
 
 ---
 
