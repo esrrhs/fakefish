@@ -1,5 +1,8 @@
 # 机器人阶段 E2E 清单：服务器以 bot_count=3 重启后执行。
+# 本阶段同时开启一局制（match_enable=true）：有机器人当对手，才能跑出
+# 「缩圈到 0 → 最后存活者吃鸡 → 自动开新局」的完整流程。
 # test_persist 自起子实例（18080/18081），须放在最后。
 # 由 scripts/run_e2e_suite.sh 读取。
 test_bots.js
+test_match.js
 test_persist.js

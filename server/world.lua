@@ -70,6 +70,23 @@ local zone_shrink_ratio = nil
 local zone_shrink_interval_s = nil
 local zone_hold_s = nil
 local zone_dps = nil
+local zone_wait_s = nil
+
+-- 一局制（match）：一局内安全区收缩到 0，最后一个存活者「吃鸡」，结算展示后
+-- 自动开新局。局状态全部走 Store（数字标量，跨帧安全）：
+--   world.match_state      1=进行中 2=结算中
+--   world.match_id         局号，从 1 开始
+--   world.match_start_at   本局开始的世界时间（秒）
+--   world.match_over_at    本局结算开始的世界时间（秒）
+--   world.match_winner_id  胜者 pid（0=无胜者，如全员同时出局）
+--   world.match_peak_alive 本局存活人数峰值：只有「真的有过对手」的局才判胜，
+--                          否则单人测试服一进场就立刻结束、不断重置世界
+-- 玩家出局标记 p.alive=false 随 players 表一起 JSON 持久化（布尔值安全）。
+-- 注意：开关不用文件级 bool——fakelua 把 `local x = true` 当编译期常量，
+-- apply_config 里按配置重赋值不生效，帧内读到的还是声明初值。因此开关以
+-- 数字 1/0 存 Store（world.match_enable），读取统一走 match_on()。
+local match_duration_s = nil
+local match_result_s = nil
 
 -- 分裂球（多细胞）
 local chat_enable = true
@@ -167,12 +184,244 @@ local function apply_config(cfg)
     zone_shrink_interval_s = cfg["zone_shrink_interval_s"] or 60
     zone_hold_s = cfg["zone_hold_s"] or 30
     zone_dps = cfg["zone_dps"] or 20
+    zone_wait_s = cfg["zone_wait_s"] or 15
+
+    local me = cfg["match_enable"]
+    if me == nil then
+        Store.set("world.match_enable", 1)
+    elseif me then
+        Store.set("world.match_enable", 1)
+    else
+        Store.set("world.match_enable", 0)
+    end
+    match_duration_s = cfg["match_duration_s"] or 90
+    match_result_s = cfg["match_result_s"] or 8
+    -- 数值标量同样入库一份：热更路径 hotfix_restore 会重放配置，主循环与
+    -- timer 回调都可能先于下一帧读到新值
+    Store.set("world.match_duration_s", match_duration_s)
+    Store.set("world.match_result_s", match_result_s)
 
     split_max_cells = cfg["split_max_cells"] or 8
     split_min_gold = cfg["split_min_gold"] or 100
     split_impulse = cfg["split_impulse"] or 480
     split_friction = cfg["split_friction"] or 3.2
     merge_cooldown_s = cfg["merge_cooldown_s"] or 12
+end
+
+-- ---- 一局制（match）----
+
+-- 一局制开关（1/0，存 Store 避免 bool 常量的跨帧坑）
+local function match_on()
+    return Store.get("world.match_enable") == 1
+end
+
+-- 局时长/结算时长同样从 Store 读：文件级数值标量跨帧的语义不保险
+-- （world_time 之类的既有标量也是入库的），统一走 Store 最稳
+local function match_duration()
+    local v = Store.get("world.match_duration_s")
+    if v == nil then return 90 end
+    return v
+end
+
+local function match_result()
+    local v = Store.get("world.match_result_s")
+    if v == nil then return 8 end
+    return v
+end
+
+-- 存活人数与本局峰值（峰值用于判断「这局真的有对手」）
+local function count_alive()
+    local n = 0
+    local last = 0
+    for pid, p in pairs(players) do
+        if p.alive ~= false then
+            n = n + 1
+            last = pid
+        end
+    end
+    return n, last
+end
+
+-- 淘汰一名玩家：清空细胞、标记出局。本局不再进场，等下一局自动复活。
+-- reason 仅用于日志/事件区分（"eaten" 被吞噬 / "zone" 被安全区毒死）。
+-- 注意：结算（落盘 + deaths 计数）由调用方在清空 parts 前完成。
+local function eliminate_player(p, reason, died_events)
+    if p == nil then return end
+    if p.alive == false then return end
+    p.parts = {}
+    p.alive = false
+    p.dx = 0
+    p.dy = 0
+    if died_events ~= nil then
+        table.insert(died_events, {
+            victim_id = p.id,
+            gold = 0,
+            x = 0,
+            y = 0,
+            out = true
+        })
+    end
+    print("[World] " .. tostring(p.name) .. " is OUT (" .. tostring(reason) .. ")")
+end
+
+-- 当前存活玩家中金币最高者（到点未分胜负时按它判胜）
+local function richest_alive()
+    local best_pid = 0
+    local best_gold = -1
+    for pid, p in pairs(players) do
+        if p.alive ~= false then
+            local g = total_gold(p)
+            if g > best_gold then
+                best_gold = g
+                best_pid = pid
+            end
+        end
+    end
+    return best_pid
+end
+
+-- 开新局：重置场景、安全区与全体玩家
+function start_match()
+    local mid = (Store.get("world.match_id") or 0) + 1
+    Store.set("world.match_id", mid)
+    Store.set("world.match_state", 1)
+    Store.set("world.match_start_at", world_time)
+    Store.set("world.match_winner_id", 0)
+    Store.set("world.match_peak_alive", 0)
+
+    -- 安全区回到覆盖全图的初始圈
+    zone.x = map_width / 2
+    zone.y = map_height / 2
+    zone.r = zone_initial_r
+    zone.phase = 0
+    zone.holding = false
+    zone.next_in = zone_wait_s
+
+    -- 场景重置：豆子与道具重刷，金币雨残豆清掉
+    spawn_foods()
+    spawn_powerups()
+    bonus_food = {}
+
+    -- 全员复活：金币回到初始值、位置重抽、特效清空
+    for pid, p in pairs(players) do
+        local sx, sy = get_random_spawn()
+        p.parts = { make_cell(sx, sy, initial_gold, 0, 0, world_time) }
+        p.alive = true
+        p.dx = 0
+        p.dy = 0
+        p.fx_speed_until = 0
+        p.fx_shield_until = 0
+        p.fx_magnet_until = 0
+        p.pending_split = false
+        p.last_split = -merge_cooldown_s
+    end
+
+    if world_events ~= nil then
+        world_events.match_start_due = true
+        world_events.zone_due = true
+    end
+    print("[World] Match #" .. tostring(mid) .. " started (duration "
+          .. tostring(match_duration()) .. "s)")
+end
+
+-- 结束本局：置结算态，胜者只存 pid（名字是运行期字符串，跨帧取会变垃圾，
+-- 广播时再从 players 表实时读）
+function end_match(winner_id)
+    if Store.get("world.match_state") ~= 1 then return end
+    Store.set("world.match_state", 2)
+    Store.set("world.match_over_at", world_time)
+    Store.set("world.match_winner_id", winner_id or 0)
+    if world_events ~= nil then
+        world_events.match_over_due = true
+    end
+    local wn = "none"
+    if winner_id ~= nil and winner_id ~= 0 then
+        local wp = players[winner_id]
+        if wp ~= nil then wn = wp.name end
+    end
+    print("[World] Match #" .. tostring(Store.get("world.match_id"))
+          .. " over, winner: " .. tostring(wn))
+end
+
+-- 每帧局调度：判定结束 / 结算倒计时结束后自动开新局
+local function step_match()
+    if not match_on() then return end
+    local state = Store.get("world.match_state") or 1
+
+    local n, last = count_alive()
+    local peak = Store.get("world.match_peak_alive") or 0
+    if n > peak then
+        Store.set("world.match_peak_alive", n)
+        peak = n
+    end
+
+    if state == 1 then
+        local elapsed = world_time - (Store.get("world.match_start_at") or 0)
+        if peak >= 2 and n <= 1 then
+            -- 真的有过对手，最后活下来的人吃鸡（n==0 表示同归于尽，无胜者）
+            end_match(last)
+        elseif peak >= 1 and n == 0 then
+            -- 全灭（例如圈缩到 0 后同时被毒死）：收局避免永久空场。
+            -- peak<1 说明本局压根没人进场（空服开局），不能算结束。
+            end_match(0)
+        elseif elapsed >= match_duration() and peak >= 2 then
+            -- 到点未分胜负：存活者中金币最高者判胜。
+            -- 单人局（peak<2）不在这里收：否则只有一个人的测试服一到点就被
+            -- 重置世界，所有时序用例都会被中途打断。
+            end_match(richest_alive())
+        end
+    else
+        local over_for = world_time - (Store.get("world.match_over_at") or 0)
+        if over_for >= match_result() then
+            start_match()
+        end
+    end
+end
+
+-- 快照/广播用的局信息（构造新表，供主循环安全读取与发送）
+function get_match_info()
+    if not match_on() then return nil end
+    local state = Store.get("world.match_state") or 1
+    local remain = 0
+    if state == 1 then
+        remain = match_duration() - (world_time - (Store.get("world.match_start_at") or 0))
+        if remain < 0 then remain = 0 end
+    else
+        remain = match_result() - (world_time - (Store.get("world.match_over_at") or 0))
+        if remain < 0 then remain = 0 end
+    end
+    local info = {
+        id = Store.get("world.match_id") or 0,
+        state = state,
+        remain = math.floor(remain * 10) / 10
+    }
+    local wid = Store.get("world.match_winner_id") or 0
+    if wid ~= 0 then
+        info.winner_id = wid
+        local wp = players[wid]
+        -- 名字只在同帧广播使用，不跨帧保存（运行期字符串会变垃圾）
+        if wp ~= nil then info.winner_name = wp.name end
+    end
+    local alive_n = 0
+    for pid, p in pairs(players) do
+        if p.alive ~= false then alive_n = alive_n + 1 end
+    end
+    info.alive = alive_n
+    return info
+end
+
+-- 主循环读取并清除「本局结束」标记
+function pop_match_over()
+    if world_events == nil or world_events.match_over_due ~= true then return false end
+    world_events.match_over_due = false
+    return true
+end
+
+-- 主循环读取并清除「新局开始」标记
+function pop_match_start()
+    if world_events == nil or world_events.match_start_due ~= true then return false end
+    world_events.match_start_due = false
+    return true
 end
 
 -- 创建/重建两路 PCG 随机流。均以当前墙钟时间派生种子（不同常数偏移拉开初态），
@@ -218,6 +467,18 @@ function init(cfg)
 
     spawn_foods()
     spawn_powerups()
+
+    -- 一局制初值；随后 start_match 开出第 1 局（此时玩家表为空，只有机器人随后进场）
+    Store.set("world.match_id", 0)
+    Store.set("world.match_state", 1)
+    Store.set("world.match_start_at", 0)
+    Store.set("world.match_over_at", 0)
+    Store.set("world.match_winner_id", 0)
+    Store.set("world.match_peak_alive", 0)
+    if match_on() then
+        start_match()
+    end
+
     print("[World] Initialized with map " .. tostring(map_width) .. "x" .. tostring(map_height)
           .. ", " .. tostring(max_food) .. " gold pellets, " .. tostring(powerup_count) .. " powerups")
 end
@@ -613,6 +874,16 @@ function add_player(connid, account)
         DB.update_gold(existing_p.name, existing_p.id, total_gold(existing_p))
     end
 
+    -- 一局制：每局都从初始金币开始（历史战绩走 DB 的 best_gold，不继承上局余额）
+    if match_on() then
+        gold = initial_gold
+    end
+
+    local joining = true
+    if match_on() and (Store.get("world.match_state") or 1) == 2 then
+        joining = false
+    end
+
     local p = {
         id = pid,
         connid = connid,
@@ -625,8 +896,13 @@ function add_player(connid, account)
         fx_magnet_until = 0,
         pending_split = false,
         last_split = -merge_cooldown_s,
-        parts = { make_cell(spawn_x, spawn_y, gold, 0, 0, 0) }
+        alive = joining
     }
+    if joining then
+        p.parts = { make_cell(spawn_x, spawn_y, gold, 0, 0, 0) }
+    else
+        p.parts = {}
+    end
 
     players[pid] = p
     conn_to_pid[connid] = pid
@@ -695,7 +971,9 @@ end
 -- 用定时批量落盘把损失窗口压到一个周期；机器人不落盘。
 function flush_online_gold()
     for pid, p in pairs(players) do
-        if not p.is_bot then
+        -- 一局制：已出局的人总金币为 0，写库会把历史余额清成 0（历史战绩走
+        -- best_gold，不该被本局的出局状态覆盖），因此跳过
+        if not p.is_bot and p.alive ~= false then
             DB.update_gold(p.name, p.id, total_gold(p))
         end
     end
@@ -914,17 +1192,12 @@ local function eat_one_cell(E, V, eat_events, died_events)
     V.c.alive = false
 
     if #vp.parts == 0 then
-        local rx, ry = get_random_spawn()
-        vp.parts = { make_cell(rx, ry, initial_gold, 0, 0, world_time) }
-        vp.dx = 0
-        vp.dy = 0
+        -- 一局制：最后一个细胞被吃 = 淘汰出局，不再原地复活，等下一局重新进场
         table.insert(eat_events, {
             eater_id = E.pp.id, victim_id = vp.id, gold = eaten_gold, full = true
         })
-        table.insert(died_events, {
-            victim_id = vp.id, gold = initial_gold, x = rx, y = ry
-        })
         settle_persist(E.pp, vp, true)
+        eliminate_player(vp, "eaten", died_events)
     else
         table.insert(eat_events, {
             eater_id = E.pp.id, victim_id = vp.id, gold = eaten_gold, partial = true
@@ -1073,27 +1346,39 @@ local function step_movement(dt)
 end
 
 -- 阶段 2.5：安全区伤害（每细胞独立，小数累积掉金币）
+-- 圈外持续掉金币；一局制下掉到 0 即「被毒死」出局（否则圈缩到 0 后
+-- 全员僵在最小半径上互相吃不掉，永远分不出胜负）
+-- 返回本帧因圈伤产生的出局事件，由 update 并入 died_events
 local function step_zone_damage(dt)
-    if not zone_enable or zone == nil then return end
+    local outs = {}
+    if not zone_enable or zone == nil then return outs end
     for pid, p in pairs(players) do
-        for ci = 1, #p.parts do
-            local c = p.parts[ci]
-            local zdx = c.x - zone.x
-            local zdy = c.y - zone.y
-            if (zdx * zdx + zdy * zdy) > (zone.r * zone.r) then
-                c.zone_acc = c.zone_acc + zone_dps * dt
-                if c.zone_acc >= 1.0 then
-                    local lose = math.floor(c.zone_acc)
-                    c.zone_acc = c.zone_acc - lose
-                    c.gold = c.gold - lose
-                    if c.gold < 0 then c.gold = 0 end
-                    c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+        if p.alive ~= false then
+            local drained = false
+            for ci = 1, #p.parts do
+                local c = p.parts[ci]
+                local zdx = c.x - zone.x
+                local zdy = c.y - zone.y
+                if (zdx * zdx + zdy * zdy) > (zone.r * zone.r) then
+                    c.zone_acc = c.zone_acc + zone_dps * dt
+                    if c.zone_acc >= 1.0 then
+                        local lose = math.floor(c.zone_acc)
+                        c.zone_acc = c.zone_acc - lose
+                        c.gold = c.gold - lose
+                        if c.gold < 0 then c.gold = 0 end
+                        c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+                        if c.gold <= 0 then drained = true end
+                    end
+                else
+                    c.zone_acc = 0
                 end
-            else
-                c.zone_acc = 0
+            end
+            if drained then
+                eliminate_player(p, "zone", outs)
             end
         end
     end
+    return outs
 end
 
 -- 阶段 2.6：同体细胞合体（冷却后交叠即合并，金币加权取中心）
@@ -1203,15 +1488,24 @@ end
 function update(dt)
     world_time = world_time + dt
 
+    -- 局调度放在最前：本帧刚被淘汰的人不该再参与后续结算，
+    -- 结算倒计时走完则本帧就开出新局（随后所有人已是复活状态）
+    step_match()
+
     step_split_and_pickup()
 
     local powerup_events = step_pickup_powerups()
 
     step_movement(dt)
 
-    step_zone_damage(dt)
+    local zone_outs = step_zone_damage(dt)
     step_merge()
     local eat_events, died_events = step_combat()
+
+    -- 圈伤出局并入死亡事件（与主循环的 game.death 派发同一路径）
+    for i = 1, #zone_outs do
+        died_events[#died_events + 1] = zone_outs[i]
+    end
 
     return eat_events, died_events, powerup_events
 end
@@ -1347,12 +1641,44 @@ function on_heartbeat()
         world_events.feast_due = true
     end
 
-    -- 安全区倒计时（只写字段，事件广播由主循环完成）
-    if zone_enable and zone ~= nil then
+    -- 一局制下的安全区：开局先给 zone_wait_s 秒发育时间，之后按「本局剩余比例」
+    -- 连续收缩到 0——半径每秒平滑变小（客户端从快照即可跟随，不必等事件帧），
+    -- 到局末收缩为 0，逼出最后的胜负。旧的分阶收缩 + 最小圈重置已废弃
+    -- （zone_shrink_interval_s / zone_hold_s / zone_shrink_ratio / zone_min_radius
+    --  不再参与计算，保留读取只为兼容旧配置）。
+    if match_on() and zone_enable and zone ~= nil then
+        local state = Store.get("world.match_state") or 1
+        if state == 1 then
+            local elapsed = world_time - (Store.get("world.match_start_at") or 0)
+            local span = match_duration() - zone_wait_s
+            if span < 1 then span = 1 end
+            local nr = zone_initial_r
+            if elapsed <= zone_wait_s then
+                nr = zone_initial_r
+                zone.next_in = math.floor(zone_wait_s - elapsed)
+            else
+                local prog = (elapsed - zone_wait_s) / span
+                if prog > 1 then prog = 1 end
+                nr = zone_initial_r * (1.0 - prog)
+                zone.next_in = math.floor(match_duration() - elapsed)
+            end
+            if nr < 0 then nr = 0 end
+            zone.r = nr
+            -- phase 作为收缩进度档位（每 10% 一档），供客户端/HUD 显示
+            local ph = math.floor((1.0 - (nr / zone_initial_r)) * 10 + 0.5)
+            if ph ~= zone.phase then
+                zone.phase = ph
+                world_events.zone_due = true
+            end
+        else
+            -- 结算期保持当前半径，next_in 表示距离下一局
+            zone.next_in = math.floor(match_result() - (world_time - (Store.get("world.match_over_at") or 0)))
+        end
+    elseif zone_enable and zone ~= nil then
+        -- 旧行为（match_enable=false）：分阶收缩 → 最小圈保持 → 重置为初始圈循环
         zone.next_in = zone.next_in - 1
         if zone.next_in <= 0 then
             if zone.holding then
-                -- 最小圈保持结束 → 重置为覆盖全图的初始圈，开始新一轮
                 zone.x = map_width / 2
                 zone.y = map_height / 2
                 zone.r = zone_initial_r
@@ -1360,7 +1686,6 @@ function on_heartbeat()
                 zone.holding = false
                 zone.next_in = zone_shrink_interval_s
             else
-                -- 收缩一阶：半径按比例缩小（圆心固定在地图中央）
                 local nr = math.floor(zone.r * zone_shrink_ratio)
                 if nr <= zone_min_r then
                     nr = zone_min_r

@@ -39,6 +39,17 @@
     const notificationBox = document.getElementById("notification-box");
     const zoneHud = document.getElementById("zone-hud");
     const zoneHudDetail = document.getElementById("zone-hud-detail");
+
+    // 一局制 UI：右上角局状态、屏幕中央结算面板
+    const matchHud = document.getElementById("match-hud");
+    const matchHudTitle = document.getElementById("match-hud-title");
+    const matchHudDetail = document.getElementById("match-hud-detail");
+    const matchResult = document.getElementById("match-result");
+    const matchResultTitle = document.getElementById("match-result-title");
+    const matchResultDetail = document.getElementById("match-result-detail");
+    const matchResultNext = document.getElementById("match-result-next");
+    // 本局是否已出局（被吃光/被毒死即淘汰，看别人打到本局结束）
+    let isOut = false;
     const dangerVignette = document.getElementById("danger-vignette");
 
     const chatBox = document.getElementById("chat-box");
@@ -124,6 +135,9 @@
             hud.classList.add("hidden");
             leaderboard.classList.add("hidden");
             zoneHud.classList.add("hidden");
+            matchHud.classList.add("hidden");
+            matchResult.classList.add("hidden");
+            isOut = false;
             dangerVignette.classList.remove("active");
             chatBox.classList.add("hidden");
             setChatOpen(false);
@@ -213,7 +227,15 @@
                 break;
 
             case "snapshot":
-                handleSnapshot(msg.players || [], msg.foods || [], msg.powerups || [], msg.zone);
+                handleSnapshot(msg.players || [], msg.foods || [], msg.powerups || [], msg.zone, msg.match);
+                break;
+
+            case "match_over":
+                handleMatchOver(msg);
+                break;
+
+            case "match_start":
+                handleMatchStart(msg);
                 break;
 
             case "zone":
@@ -226,10 +248,16 @@
                 break;
 
             case "you_died":
-                showToast(`你被吞噬了！已在安全区复活 (金币重置为 ${msg.gold || 100})`, "danger");
-                if (msg.x !== undefined && msg.y !== undefined) {
-                    camera.x = msg.x;
-                    camera.y = msg.y;
+                // 一局制：out=true 表示本局出局（不再原地复活），留在本局观战到结束
+                if (msg.out) {
+                    isOut = true;
+                    showToast("你已出局，观战到本局结束即可重新开始", "danger");
+                } else {
+                    showToast(`你被吞噬了！已在安全区复活 (金币重置为 ${msg.gold || 100})`, "danger");
+                    if (msg.x !== undefined && msg.y !== undefined) {
+                        camera.x = msg.x;
+                        camera.y = msg.y;
+                    }
                 }
                 break;
 
@@ -262,7 +290,7 @@
     }
 
     // 处理快照（每个细胞一条，以 "id:cell" 为键）
-    function handleSnapshot(playerList, foodList, powerupList, zoneInfo) {
+    function handleSnapshot(playerList, foodList, powerupList, zoneInfo, matchInfo) {
         if (foodList && foodList.length > 0) {
             foods = foodList;
         }
@@ -272,6 +300,9 @@
         if (zoneInfo) {
             zone = zoneInfo;
             zoneHud.classList.remove("hidden");
+        }
+        if (matchInfo) {
+            renderMatchHud(matchInfo);
         }
         const currentKeys = new Set();
         hudOnline.innerText = new Set(playerList.map(p => p.id)).size;
@@ -363,6 +394,45 @@
     }
 
     // 安全区收缩/重置事件：公告横幅 + 场景飘字
+    // ---- 一局制 UI ----
+
+    // 右上角：第 N 局 + 剩余时间/存活人数（结算期显示下一局倒计时）
+    function renderMatchHud(info) {
+        matchHud.classList.remove("hidden");
+        const remain = Math.max(0, Math.ceil(info.remain || 0));
+        matchHudTitle.innerText = `第 ${info.id || 1} 局`;
+        if (info.state === 2) {
+            matchHudDetail.innerText = `下一局 ${remain}s`;
+            matchResultNext.innerText = `下一局 ${remain}s`;
+        } else if (remain <= 0) {
+            // 圈已缩到 0，只剩「谁先被毒死」；单人对局会一直停在这里等对手加入
+            matchHudDetail.innerText = `最后决战 · 存活 ${info.alive || 0}`;
+        } else {
+            matchHudDetail.innerText = `剩余 ${remain}s · 存活 ${info.alive || 0}`;
+        }
+    }
+
+    function handleMatchOver(msg) {
+        matchResult.classList.remove("hidden");
+        const won = msg.winner_id !== undefined && msg.winner_id === localPlayerId;
+        if (won) {
+            matchResultTitle.innerText = "🏆 吃鸡！";
+            matchResultDetail.innerText = "你是最后的幸存者";
+        } else if (msg.winner) {
+            matchResultTitle.innerText = "本局结束";
+            matchResultDetail.innerText = `${msg.winner} 吃鸡` + (isOut ? "（你已出局）" : "");
+        } else {
+            matchResultTitle.innerText = "本局结束";
+            matchResultDetail.innerText = "无人幸存";
+        }
+    }
+
+    function handleMatchStart(msg) {
+        isOut = false;
+        matchResult.classList.add("hidden");
+        matchHudTitle.innerText = `第 ${msg.id || 1} 局`;
+    }
+
     function handleZoneEvent(msg) {
         zone = msg;
         zoneHud.classList.remove("hidden");

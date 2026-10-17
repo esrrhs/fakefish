@@ -212,6 +212,65 @@ body, html {
     color: #e2e8f0;
 }
 
+/* 局状态（第 N 局 / 剩余时间） */
+#match-hud {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    background: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    text-align: right;
+    z-index: 13;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+#match-hud-title {
+    color: #fbbf24;
+    font-weight: bold;
+    margin-bottom: 2px;
+}
+
+#match-hud-detail {
+    color: #e2e8f0;
+}
+
+/* 本局结算面板 */
+#match-result {
+    position: absolute;
+    left: 50%;
+    top: 38%;
+    transform: translate(-50%, -50%);
+    background: rgba(15, 23, 42, 0.92);
+    border: 1px solid rgba(251, 191, 36, 0.6);
+    border-radius: 14px;
+    padding: 22px 34px;
+    text-align: center;
+    z-index: 20;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+}
+
+#match-result-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: #fbbf24;
+    margin-bottom: 6px;
+}
+
+#match-result-detail {
+    font-size: 15px;
+    color: #e2e8f0;
+    margin-bottom: 6px;
+}
+
+#match-result-next {
+    font-size: 13px;
+    color: #94a3b8;
+}
+
 /* 圈外危险红雾（屏幕边缘红色脉动） */
 #danger-vignette {
     position: absolute;

@@ -50,6 +50,13 @@ end
 local function decide(p)
     p.ai_timer = decision_min + rng_ai:float(0, 1) * (decision_max - decision_min)
 
+    -- 一局制：出局状态下没有细胞，下面的 my_big/my_small 会索引到 nil
+    if p.parts == nil or #p.parts == 0 then
+        p.ai_dx = 0
+        p.ai_dy = 0
+        return
+    end
+
     -- 自身最大/最小细胞与总金币
     local my_big = p.parts[1]
     local my_small = p.parts[1]
@@ -94,7 +101,9 @@ local function decide(p)
     local prey_dist = sight_player
     local prey_total_gold = 0
     for oid, other in pairs(all) do
-        if other.id ~= p.id then
+        -- 一局制：已出局的玩家没有细胞，跳过（否则 other.parts[1] 为 nil，
+        -- 后面 obig.r 会直接索引 nil 抛 "attempt to index a non-table value"）
+        if other.id ~= p.id and other.alive ~= false and #other.parts > 0 then
             local obig = other.parts[1]
             local osmall = other.parts[1]
             for k = 1, #other.parts do
@@ -199,12 +208,18 @@ function update(dt)
     if bots == nil then return end
     for i = 1, #bots do
         local p = bots[i]
-        p.ai_timer = p.ai_timer - dt
-        if p.ai_timer <= 0 then
-            decide(p)
+        -- 一局制：被淘汰的机器人在本局不再决策（parts 为空，decide 会取到 nil 细胞）
+        if p.alive == false then
+            p.dx = 0
+            p.dy = 0
+        else
+            p.ai_timer = p.ai_timer - dt
+            if p.ai_timer <= 0 then
+                decide(p)
+            end
+            p.dx = p.ai_dx
+            p.dy = p.ai_dy
         end
-        p.dx = p.ai_dx
-        p.dy = p.ai_dy
     end
 end
 

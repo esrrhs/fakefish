@@ -230,12 +230,21 @@ function update()
         end
     end
 
-    -- 安全区变化（收缩/重置）：读当前 zone 信息并广播
+    -- 安全区变化（收缩档位/新局重置）：读当前 zone 信息并广播
     if World.pop_zone_due() then
         local zi = World.get_zone_info()
         if zi ~= nil then
             NetWs.notify_zone(zi)
         end
+    end
+
+    -- 一局制：本局结束（吃鸡）与新局开始各广播一次；常规倒计时走快照的 match 字段
+    if World.pop_match_over() then
+        NetWs.notify_match_over(World.get_match_info())
+        pcall(function() event.emit("game.match_over") end)
+    end
+    if World.pop_match_start() then
+        NetWs.notify_match_start(World.get_match_info())
     end
 
     -- 每秒一次的墙钟任务：由 timer 心跳置位（真实时间），不用 dt 累加——

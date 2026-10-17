@@ -14,7 +14,9 @@
 
 ### 1. 一句话玩法
 
-打开网页即以游客身份进场（无需注册），控制一个「金币球」在共享 2D 场地里移动。金币越多球越大；碰撞时大球吃掉小球，吞掉对方当前金币，小球以初始金币/大小随机位置复活。
+打开网页即以游客身份进场（无需注册），控制一个「金币球」在共享 2D 场地里移动。金币越多球越大；碰撞时大球吃掉小球，吞掉对方当前金币。
+
+**一局制**：一局内安全区从覆盖全图连续收缩到 0，被吃光或被毒圈扣光金币即**出局**（不再原地复活），最后活下来的玩家**吃鸡**；结算展示数秒后自动开下一局，全员以初始金币重新进场。历史战绩按账号累计（`best_gold`），不因新局清零。
 
 ### 2. 目标与非目标
 
@@ -105,12 +107,14 @@
 |------|------|------|
 | `login_ok` | `player_id`, `name`, `gold`, `map`, `motd?`, `guest_token?` | 登录成功；`name` 为服务端认定的昵称（游客由服务端生成，客户端须以此为准）；`motd` 为当前登录公告（无公告时不带该字段）；`guest_token` 仅游客登录时携带，客户端存起来即可在下次打开时复用同一游客 |
 | `login_fail` / `register_fail` | `reason` | 失败原因 |
-| `snapshot` | `players[]`, `foods[]`, `powerups[]`, `zone` | 全量场景状态（zone 为当前安全区信息） |
+| `snapshot` | `players[]`, `foods[]`, `powerups[]`, `zone`, `match` | 全量场景状态（zone 为当前安全区信息，match 为当前局信息） |
 | `powerup` | `player_id`, `name`, `kind` | 道具拾取事件（kind: speed/shield/magnet） |
 | `feast` | `x`, `y`, `count` | 金币雨事件：地图 (x,y) 附近散落 count 枚奖励金币豆；吃掉即消失，下一场开始时残豆清空（不会无限累积） |
 | `zone` | `x`, `y`, `r`, `phase`, `holding`, `next_in`, `reset?` | 安全区变化：收缩到新半径或重置（reset=true） |
 | `eat` | `eater_id`, `victim_id`, `eater_name`, `victim_name`, `gold` | 吃球事件（可驱动特效与击杀播报） |
-| `you_died` | `gold`, `x`, `y` | 自己被吃后复活信息 |
+| `you_died` | `gold`, `x`, `y`, `out?` | 自己被吃；一局制下 `out=true` 表示本局出局（不再复活，观战到本局结束），不带该字段时按旧语义原地复活 |
+| `match_over` | `id`, `alive`, `winner?`, `winner_id?` | 本局结束：胜者昵称与 id（全员同时出局时无胜者字段） |
+| `match_start` | `id`, `alive` | 新一局开始（局号递增），客户端据此清除结算面板 |
 | `rank` | `list[]` | 历史最佳排行（按 `best_gold` 降序，来自 MySQL） |
 | `hotfix_result` | `results[]`，或顶层 `ok=false, err` | 热更结果：每项 `{module, ok, err?}`；鉴权失败时为顶层错误 |
 | `chat` | `name`, `content` | 世界聊天：某玩家发来一条消息 |
@@ -118,7 +122,9 @@
 | `error` | `reason` | 错误通知（如同账号在别处登录，旧连接被踢前下发） |
 | `pong` | 无 | 对 `ping` 的心跳应答 |
 
-`players[]` 元素示例：`{ id, cell, name, x, y, gold, r, bot?, fx? }`（cell 为细胞序号，每名玩家可有多条）。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人，`fx: speed/shield/magnet` 表示道具特效生效中。
+`players[]` 元素示例：`{ id, cell, name, x, y, gold, r, bot?, fx? }`（cell 为细胞序号，每名玩家可有多条）。前端据此画圆、标金币/昵称；`bot: true` 表示 AI 机器人，`fx: speed/shield/magnet` 表示道具特效生效中。出局的玩家没有细胞，因此不会出现在 `players[]` 里。
+
+`match` 元素示例：`{ id, state, remain, alive, winner_id?, winner_name? }`——`state` 1=进行中 / 2=结算中，`remain` 为本局剩余秒数（结算期为下一局倒计时），`alive` 为存活人数，`winner_*` 仅在结算期带上。
 
 ### 7. 服务器模块划分（FakeLua）
 
@@ -327,7 +333,8 @@ curl -X POST http://127.0.0.1:8080/api/admin/run \
 - 打开页面即连 `ws://host:ws_port` 并发 `type=guest` 进场（`guest_token` 存 localStorage，下次打开复用同一游客、延续战绩）；`login_ok` 后进入游戏循环。
 - 遮罩只在连接建立前、断线后或服务端拒绝时露出，上面的按钮用于重新进场。
 - 键盘 WASD / 方向键 → 发 `move`；按 `snapshot` 渲染所有球。
-- 不做权威计算；被吃时根据 `you_died` 提示并继续操作复活后的球。
+- 不做权威计算；一局制下被吃即出局，按 `you_died` 的 `out=true` 提示「观战到本局结束」。
+- 右上角常驻局状态：第 N 局 / 剩余秒数（结算期为下一局倒计时）/ 存活人数；本局结束时中央弹出结算面板（吃鸡者或「无人幸存」）。
 
 ### 10. 技术约束（来自 FakeLua）
 
@@ -415,6 +422,7 @@ fakefish/
   test_split.js           # 分裂/合体机制验证
   test_hotfix.js          # 运行中热更（含机器人场景）验证
   test_bots.js            # AI 机器人与历史排行验证
+  test_match.js           # 一局制：缩圈到 0 / 吃鸡 / 自动开新局（机器人阶段，需对手）
   test_persist.js         # 跨重启登录持久化（隔离端口第二实例，无 MySQL 自动 SKIP）
   # …另有 ledger / audit / webhook / redis / feed / protobuf / http_compress /
   #   admin / backup / config_export / metrics / admin_ops 共 12 个 E2E，
@@ -640,6 +648,18 @@ Phase 20 打通三平台后，CI 自身的维护性与时间预算成了主要�
 
 > **实现注意**：`host/main.cpp` 里每帧一次顶层 Call 是整个方案的前提——fakelua 的 frame arena 只在顶层 Call 进入、重入计数归零时重置。资源占用实测见 §11。
 
+### Phase 24 — 一局制玩法（缩圈到 0 / 吃鸡 / 自动开新局）
+
+玩法从「无限复活 + 安全区循环重置」改为一局一局：一局内安全区连续收缩到 0，被吃光或被毒圈扣光金币即出局，最后存活者吃鸡，结算数秒后自动开下一局。
+
+- [x] **局状态机（`World`）**：`match_id` / `state`(进行中|结算中) / `start_at` / `over_at` / `winner_id` / `peak_alive` 全部走 Store。结束条件三选一：本局真有过对手（峰值 ≥ 2）且存活 ≤ 1 → 最后存活者吃鸡；全员出局 → 收局（无胜者）；到 `match_duration_s` 未分胜负 → 存活者中金币最高者判胜。结算 `match_result_s` 秒后自动 `start_match()`
+- [x] **淘汰制**：`eat_one_cell` 吃掉最后一个细胞不再原地复活，改为标记 `p.alive=false` 并清空细胞；圈伤把金币扣到 0 同样出局（否则圈缩到 0 后全员僵在最小半径上互相吃不掉，永远分不出胜负）。出局玩家不再落盘金币（避免把历史余额清成 0），也不再按空闲连接踢除
+- [x] **缩圈改为按局进度连续收缩**：开局 `zone_wait_s` 秒后，半径按本局剩余比例线性收缩到 0（每秒平滑变小，客户端从快照即可跟随）。旧的分阶收缩 + 最小圈保持重置保留为 `match_enable=false` 时的分支
+- [x] **协议与前端**：快照新增 `match` 字段（局号 / 状态 / 剩余秒数 / 存活数）；新增 `match_over`（胜者）与 `match_start`（新局）广播；`you_died` 带 `out=true` 表示出局。前端右上角常驻局状态、局末中央弹出结算面板、下一局倒计时
+- [x] **测试策略**：一局制只在机器人阶段（bot_count=3）开启——主阶段是单人世界，既分不出胜负，也会被新局重置打断时序敏感的用例。新增 `test_match.js` 登记在 `e2e-bots.txt`
+
+> **实现注意**：局开关与时长不要用文件级 `local` 承载。fakelua 把 `local x = true` 当编译期常量，按配置重赋值不生效（帧内读到的仍是声明初值）；数值标量跨帧的语义也不保险，故开关以 1/0、时长以数字统一存 Store，读取走 `match_on()` / `match_duration()` / `match_result()`。
+
 ### 里程碑验收
 
 1. **M1**：空服启动 + 连上 MySQL / 内存降级 + WS 建立连接：**已通过**
@@ -764,9 +784,10 @@ npm run test:auth      # 也可单独运行某个套件
 npm run check:e2e      # 校验 test_*.js 与 scripts/e2e-*.txt 清单双向一致
 ```
 
-> 注意：除 `test_bots.js` / `test_persist.js` 外的用例按无机器人世界（`bot_count: 0`）设计，CI 会在该阶段后重启为 `bot_count: 3` 再跑机器人与持久化用例。
+> 注意：除 `test_bots.js` / `test_match.js` / `test_persist.js` 外的用例按无机器人世界（`bot_count: 0`）设计，CI 会在该阶段后重启为 `bot_count: 3` 再跑机器人与持久化用例。
+> 一局制（`match_enable`）只在机器人阶段打开：主阶段是单人世界，没有对手就分不出胜负，也会被新局重置打断时序敏感的用例；`test_match.js` 依赖有对手的世界，因此登记在机器人阶段清单里。
 
-用例清单的唯一真源是 `scripts/e2e-main.txt`（主阶段 22 个）与 `scripts/e2e-bots.txt`（机器人阶段 2 个），三平台 CI 均通过 `scripts/run_e2e_suite.sh` 读取它们执行。**新增 `test_*.js` 时必须同时登记进对应清单**，否则该用例在 CI 里不会被执行——`npm run check:e2e`（CI 中同名步骤）会拦截这种情况。
+用例清单的唯一真源是 `scripts/e2e-main.txt`（主阶段 23 个）与 `scripts/e2e-bots.txt`（机器人阶段 3 个），三平台 CI 均通过 `scripts/run_e2e_suite.sh` 读取它们执行。**新增 `test_*.js` 时必须同时登记进对应清单**，否则该用例在 CI 里不会被执行——`npm run check:e2e`（CI 中同名步骤）会拦截这种情况。
 
 ---
 

@@ -302,9 +302,35 @@ function broadcast_snapshot()
         players = snap,
         foods = foods,
         powerups = powerups,
-        zone = World.get_zone_info()
+        zone = World.get_zone_info(),
+        match = World.get_match_info()
     }
     broadcast(msg)
+end
+
+-- 本局结束：胜者与下一局倒计时（result_s 秒后服务端自动开新局）
+function notify_match_over(info)
+    if info == nil then return end
+    local m = {
+        type = "match_over",
+        id = info.id,
+        alive = info.alive or 0
+    }
+    if info.winner_name ~= nil then
+        m.winner = info.winner_name
+        m.winner_id = info.winner_id
+    end
+    broadcast(m)
+end
+
+-- 新局开始
+function notify_match_start(info)
+    if info == nil then return end
+    broadcast({
+        type = "match_start",
+        id = info.id,
+        alive = info.alive or 0
+    })
 end
 
 function notify_powerup(player_id, name, kind)
@@ -371,7 +397,10 @@ function kick_idle(timeout_s)
     local now = os.time()
     local all_players = World.get_all_players()
     for pid, p in pairs(all_players) do
-        if p.connid ~= nil and p.last_seen ~= nil and (now - p.last_seen) > timeout_s then
+        -- 一局制：已出局的人在旁观等下一局，不会再发 move/ping，
+        -- 不能当作空闲连接踢掉（否则每局中途出局的人都会被断线）
+        if p.alive ~= false and p.connid ~= nil and p.last_seen ~= nil
+           and (now - p.last_seen) > timeout_s then
             print("[NetWs] Kicking idle connection connid=" .. tostring(p.connid)
                   .. " player=" .. tostring(p.name) .. " (idle " .. tostring(now - p.last_seen) .. "s)")
             ws_server_obj:close_connection(p.connid)
@@ -391,13 +420,16 @@ function notify_died(victim_id, gold, x, y)
     local all_players = World.get_all_players()
     local p = all_players[victim_id]
     if p ~= nil and p.connid ~= nil then
-        local json_str = json.encode({
+        -- 一局制：被吃光/被毒死即出局，不再原地复活。out=true 时前端显示
+        -- 「等待下一局」而不是「已复活」
+        local msg = {
             type = "you_died",
             gold = gold,
             x = x,
             y = y
-        })
-        ws_server_obj:send(p.connid, json_str)
+        }
+        if p.alive == false then msg.out = true end
+        ws_server_obj:send(p.connid, json.encode(msg))
     end
 end
 

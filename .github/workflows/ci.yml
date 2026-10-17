@@ -136,6 +136,10 @@ jobs:
           # Speed up the safe-zone shrink/hold cycle so test_zone.js sees a full cycle
           sed -i.bak 's/zone_shrink_interval_s: 60/zone_shrink_interval_s: 12/' config.yaml && rm -f config.yaml.bak
           sed -i.bak 's/zone_hold_s: 30/zone_hold_s: 6/' config.yaml && rm -f config.yaml.bak
+          # 主阶段是 bot_count=0 的单人世界：关掉一局制，保留旧的「缩圈循环 + 被吃复活」
+          # 语义，让 combat/split/zone 这类用例仍在确定性世界里跑（一局制要有人被淘汰
+          # 才分得出胜负，放到下面的机器人阶段验证）
+          sed -i.bak 's/match_enable: true/match_enable: false/' config.yaml && rm -f config.yaml.bak
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -168,6 +172,11 @@ jobs:
           kill $SERVER_PID || true
           sleep 1
           sed -i.bak 's/bot_count: 0/bot_count: 3/' config.yaml && rm -f config.yaml.bak
+          # 机器人阶段开回一局制：有 3 个机器人当对手，才能真正打出「缩圈到 0 →
+          # 最后一个存活者吃鸡 → 自动开新局」的完整流程（test_match.js）
+          sed -i.bak 's/match_enable: false/match_enable: true/' config.yaml && rm -f config.yaml.bak
+          # 一局调快：单局 45s + 结算 5s，让 test_match.js 在一个观察窗口内看到完整循环
+          sed -i.bak 's/match_duration_s: 90/match_duration_s: 45/' config.yaml && rm -f config.yaml.bak
           ./build/fakefish --config=config.yaml > server_bots.log 2>&1 &
           SERVER_PID=$!
           BOT_READY=0
@@ -307,6 +316,10 @@ jobs:
           # Speed up the safe-zone shrink/hold cycle so test_zone.js sees a full cycle
           sed -i.bak 's/zone_shrink_interval_s: 60/zone_shrink_interval_s: 12/' config.yaml && rm -f config.yaml.bak
           sed -i.bak 's/zone_hold_s: 30/zone_hold_s: 6/' config.yaml && rm -f config.yaml.bak
+          # 主阶段是 bot_count=0 的单人世界：关掉一局制，保留旧的「缩圈循环 + 被吃复活」
+          # 语义，让 combat/split/zone 这类用例仍在确定性世界里跑（一局制要有人被淘汰
+          # 才分得出胜负，放到下面的机器人阶段验证）
+          sed -i.bak 's/match_enable: true/match_enable: false/' config.yaml && rm -f config.yaml.bak
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -339,6 +352,11 @@ jobs:
           kill $SERVER_PID || true
           sleep 1
           sed -i.bak 's/bot_count: 0/bot_count: 3/' config.yaml && rm -f config.yaml.bak
+          # 机器人阶段开回一局制：有 3 个机器人当对手，才能真正打出「缩圈到 0 →
+          # 最后一个存活者吃鸡 → 自动开新局」的完整流程（test_match.js）
+          sed -i.bak 's/match_enable: false/match_enable: true/' config.yaml && rm -f config.yaml.bak
+          # 一局调快：单局 45s + 结算 5s，让 test_match.js 在一个观察窗口内看到完整循环
+          sed -i.bak 's/match_duration_s: 90/match_duration_s: 45/' config.yaml && rm -f config.yaml.bak
           ./build/fakefish --config=config.yaml > server_bots.log 2>&1 &
           SERVER_PID=$!
           BOT_READY=0
@@ -597,6 +615,10 @@ jobs:
           sed -i 's/feast_interval_s: 120/feast_interval_s: 12/' config.yaml
           sed -i 's/zone_shrink_interval_s: 60/zone_shrink_interval_s: 12/' config.yaml
           sed -i 's/zone_hold_s: 30/zone_hold_s: 6/' config.yaml
+          # 主阶段是 bot_count=0 的单人世界：关掉一局制，保留旧的「缩圈循环 + 被吃复活」
+          # 语义，让 combat/split/zone 这类用例仍在确定性世界里跑（一局制要有人被淘汰
+          # 才分得出胜负，放到下面的机器人阶段验证）
+          sed -i 's/match_enable: true/match_enable: false/' config.yaml
           npm install
 
       - name: Run fakefish server & E2E self-test
@@ -647,6 +669,10 @@ jobs:
           taskkill //F //IM fakefish.exe //T 2>/dev/null || true
           sleep 1
           sed -i 's/bot_count: 0/bot_count: 3/' config.yaml
+          # 机器人阶段开回一局制（见上）
+          sed -i 's/match_enable: false/match_enable: true/' config.yaml
+          # 一局调快（见上）
+          sed -i 's/match_duration_s: 90/match_duration_s: 45/' config.yaml
           ./build/fakefish.exe --config=config.yaml > server_bots.log 2>&1 &
           BOT_READY=0
           for i in $(seq 1 120); do

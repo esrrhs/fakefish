@@ -109,9 +109,8 @@ log:
 # 下次打开带回即可恢复同一个游客。换浏览器或清缓存会拿到新身份。
 # 注意：开放访问后 accounts 表会随游客数持续增长，需要定期清理（见 README）。
 guest:
-  enabled: true          # false 时拒绝一切游客请求，前端自动退回登录框
-  auto_enter: true       # true：打开页面即以游客身份自动进场，登录框不显示
-                         #      （URL 加 ?login=1 仍可唤出登录框注册正式账号）
+  enabled: true          # false 时拒绝一切游客请求（前端没有登录框，关掉就无人能进场）
+  auto_enter: true       # true：打开页面即以游客身份自动进场，不再显示任何表单
   prefix: "游客"          # 游客昵称前缀，后接 4 位随机数字
   secret: ""             # 凭证签名密钥。留空则自动生成并持久化到 data/.guest_secret；
                          # 换密钥会让所有已发出的游客凭证失效（游客会拿到新身份）
@@ -137,14 +136,23 @@ game:
   fx_magnet_s: 8           # 磁铁效果持续秒数（金币豆拾取半径 x4）
   feast_interval_s: 120    # 金币雨间隔秒数（timer 心跳驱动），0 关闭；CI 中会被 sed 调快
 
+  # 一局制（match）：一局内安全区收缩到 0，最后存活者「吃鸡」，结算后自动开新局
+  match_enable: true       # 总开关；false 回到旧的「无限复活 + 最小圈保持后重置」
+  match_duration_s: 90     # 单局最长时长。到点仍未分胜负时，存活者中金币最高者判胜
+                           # （单人对局不会因到点结束，避免测试服不断重置世界）
+  match_result_s: 8        # 结算展示时长，倒计时结束后自动开下一局
+
   # 动态安全区（收缩毒圈）
   zone_enable: true        # 是否启用安全区收缩
   zone_initial_radius: 1500  # 初始安全圈半径（覆盖整张地图）
+  zone_wait_s: 15          # 开局后经过多少秒才开始收缩（留给发育/捡豆的时间）
+  zone_dps: 20             # 圈外每秒流失金币；一局制下金币被扣到 0 即出局
+  # 以下三项在一局制下不再参与计算（缩圈改为按本局剩余比例连续收缩到 0），
+  # 保留仅为兼容旧配置：把 match_enable 置 false 后它们重新生效
   zone_min_radius: 250     # 最小圈半径，达到后保持再重置
   zone_shrink_ratio: 0.7   # 每阶段半径乘以此系数
-  zone_shrink_interval_s: 60  # 收缩间隔秒数；CI 中会被 sed 调快
-  zone_hold_s: 30          # 最小圈保持秒数，之后重置为初始圈；CI 中会被 sed 调快
-  zone_dps: 20             # 圈外每秒流失金币
+  zone_shrink_interval_s: 60  # 收缩间隔秒数
+  zone_hold_s: 30          # 最小圈保持秒数，之后重置为初始圈
 
   # 分裂球（空格分裂；细胞冷却后自动合体）
   split_max_cells: 8       # 每名玩家最多细胞数
