@@ -43,13 +43,18 @@ async function runBotAndRankTest() {
         }
     });
 
+    // 等够 5 个快照，但窗口放宽到 30s：固定 6s 等于硬编码「服务端至少 0.83fps」，
+    // 而 CI 的共享 runner（尤其 macOS，实测 ~1fps，开机器人后更低）给不了这个
+    // 帧率——那是环境容量问题，不是机器人功能的对错。断言的实质（快照里有机器人、
+    // 机器人在移动）保持不变，只把等待预算改成「够数就走、超时才算失败」。
+    const SNAP_WAIT_MS = Number(process.env.BOTS_SNAP_WAIT_MS || 30000);
     const t0 = Date.now();
-    while (Date.now() - t0 < 6000) {
+    while (snapPlayers.length < 5 && Date.now() - t0 < SNAP_WAIT_MS) {
         await new Promise(r => setTimeout(r, 200));
     }
 
     if (snapPlayers.length < 5) {
-        console.error(`FAIL: expected >= 5 snapshots, got ${snapPlayers.length}`);
+        console.error(`FAIL: expected >= 5 snapshots within ${SNAP_WAIT_MS}ms, got ${snapPlayers.length}`);
         process.exit(1);
     }
 
