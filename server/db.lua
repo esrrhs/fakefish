@@ -427,9 +427,15 @@ local rank_inflight_timeout_s = 15
 function tick_refresh()
     if _U["top_cache"] == nil then return end
 
+    -- 缓存仍空时先用内存榜垫底：MySQL 路径发起查询后会直接 return，
+    -- 若此时 list 还是 init 的 {}，在途期间 get_rank 会一直拿到空榜
+    -- （Windows CI 上排行 SELECT 曾卡满 15s 超时，test_auth 正好踩中）。
     if _U["pool"] ~= nil then
         if _U["top_cache"].pending then
             if os.time() - _U["top_cache"].pending_t0 < rank_inflight_timeout_s then
+                if #_U["top_cache"].list == 0 then
+                    _U["top_cache"].list = sort_top(20)
+                end
                 return
             end
             -- 在途超时：放弃这条查询，本轮改走内存，下一轮重新发起
@@ -438,6 +444,9 @@ function tick_refresh()
         else
             local conn = _U["pool"]:acquire()
             if conn ~= nil then
+                if #_U["top_cache"].list == 0 then
+                    _U["top_cache"].list = sort_top(20)
+                end
                 _U["top_cache"].pending = true
                 _U["top_cache"].pending_t0 = os.time()
                 local sql = "SELECT username, best_gold, kills FROM accounts ORDER BY best_gold DESC, kills DESC LIMIT 20"
@@ -468,7 +477,10 @@ function on_top_result(c, err, result)
         _U["top_cache"].list = sort_top(20)
         return
     end
-    if result == nil or result[1] ~= true or result[3] == nil then return end
+    if result == nil or result[1] ~= true or result[3] == nil then
+        _U["top_cache"].list = sort_top(20)
+        return
+    end
 
     local list = {}
     local rows = result[3]
@@ -483,6 +495,9 @@ function on_top_result(c, err, result)
     if #list > 0 then
         _U["top_cache"].list = list
         print("[DB] Rank cache refreshed from MySQL: " .. tostring(#list) .. " entries")
+    else
+        -- MySQL 此刻还没有账号行（冷启动窗口）：回退内存，避免把已有内存榜清空
+        _U["top_cache"].list = sort_top(20)
     end
 end
 
@@ -494,12 +509,22 @@ function on_exec_result(c, err, result)
 end
 
 -- 供 NetWs 应答 get_rank：返回缓存的 top N（截断副本）
+-- 缓存尚未刷新（MySQL 在途且从未垫过内存榜）时即时用内存榜应答，避免空榜。
 function get_top(limit)
-    if _U["top_cache"] == nil then return {} end
+    local list = nil
+    if _U["top_cache"] ~= nil then
+        list = _U["top_cache"].list
+    end
+    if list == nil or #list == 0 then
+        list = sort_top(20)
+        if _U["top_cache"] ~= nil then
+            _U["top_cache"].list = list
+        end
+    end
     local out = {}
-    for i = 1, #_U["top_cache"].list do
+    for i = 1, #list do
         if i > limit then break end
-        table.insert(out, _U["top_cache"].list[i])
+        table.insert(out, list[i])
     end
     return out
 end
@@ -525,6 +550,12 @@ function restore()
     _U["db_state"] = Store.get_json("db.db_state")
     if _U["db_state"] == nil then _U["db_state"] = { next_id = 900000 } end
     _U["top_cache"] = Store.get_json("db.top_cache")
+    if _U["top_cache"] == nil then
+        _U["top_cache"] = { list = {}, pending = false, pending_t0 = 0 }
+    end
+    if _U["top_cache"].list == nil then _U["top_cache"].list = {} end
+    if _U["top_cache"].pending == nil then _U["top_cache"].pending = false end
+    if _U["top_cache"].pending_t0 == nil then _U["top_cache"].pending_t0 = 0 end
     _U["auth_pipe"] = Store.get_json("db.auth_pipe")
     if _U["auth_pipe"] == nil then _U["auth_pipe"] = { current = nil, queue = {} } end
 end

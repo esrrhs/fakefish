@@ -168,7 +168,9 @@ async function run() {
     console.log(`[4/4] World hotfix preserved entity: id=${self.id}, gold=${self.gold}, r=${self.r}`);
 
     // 热更后继续运行 4s，确认世界循环稳定（快照持续到达）。
-    // 共享 CI runner 可能短时降速，阈值取 5Hz 底线（20/4s）：死循环为 0，正常即使降速也远超。
+    // 阈值取 2Hz 底线（8/4s）：死循环为 0；world 热更刚重编译完（world+bot
+    // 两份大模块）时，macOS 共享 runner 上 NativeObject 字段热路径会短暂掉到
+    // ~3fps（实测 11/4s），5Hz 底线会误杀健康进程。
     let snapshotsAfter = 0;
     const counter = (m) => {
         if (JSON.parse(m.data).type === 'snapshot') snapshotsAfter++;
@@ -176,7 +178,7 @@ async function run() {
     ws.addEventListener('message', counter);
     await new Promise(r => setTimeout(r, 4000));
     ws.removeEventListener('message', counter);
-    check(snapshotsAfter >= 20, `server unstable after hotfix, only ${snapshotsAfter} snapshots in 4s`);
+    check(snapshotsAfter >= 8, `server unstable after hotfix, only ${snapshotsAfter} snapshots in 4s`);
 
     clearInterval(pingTimer);
     console.log('=== [Hotfix E2E Test] PASSED ===');

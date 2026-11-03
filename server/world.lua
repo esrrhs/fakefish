@@ -515,6 +515,12 @@ function restore()
     _U["world_time"] = Store.get("world.world_time") or 0
     _U["rng_spawn"] = Store.get("world.rng_spawn")
     _U["rng_feast"] = Store.get("world.rng_feast")
+    -- 配置标量（map_width 等）以数字形式挂在 NativeObject 上跨帧存活；
+    -- 热更 CompileFile 后若字段被清空，这里按 game_cfg 重放，避免热更后
+    -- 主循环读到 nil 标量而拖垮帧率/快照。
+    if _U["map_width"] == nil and _U["game_cfg"] ~= nil then
+        apply_config(_U["game_cfg"])
+    end
 end
 
 -- 热更：保存全部运行时状态。
@@ -1161,43 +1167,55 @@ end
 
 -- 阶段 0+1：处理分裂请求 + 拾取金币（每细胞独立）
 local function step_split_and_pickup()
-    for pid, p in pairs(_U["players"]) do
+    -- 热路径：把 NativeObject 字段提到函数局部，避免内层循环每次 _U["x"] 开销
+    local players = _U["players"]
+    local food_coins = _U["food_coins"]
+    local bonus_food = _U["bonus_food"]
+    local world_time = _U["world_time"]
+    local bot_max_gold = _U["bot_max_gold"]
+    local radius_base = _U["radius_base"]
+    local radius_k = _U["radius_k"]
+    local rng_spawn = _U["rng_spawn"]
+    local map_width = _U["map_width"]
+    local map_height = _U["map_height"]
+
+    for pid, p in pairs(players) do
         if p.pending_split then
             p.pending_split = false
             do_split(p)
         end
     end
 
-    for pid, p in pairs(_U["players"]) do
+    for pid, p in pairs(players) do
         -- 机器人达到金币软上限后不再被动拾取，避免无限膨胀；吞噬玩家不受影响
-        if not (p.is_bot and total_gold(p) >= _U["bot_max_gold"]) then
+        if not (p.is_bot and total_gold(p) >= bot_max_gold) then
           for ci = 1, #p.parts do
             local c = p.parts[ci]
             local pickup_r = c.r
-            if _U["world_time"] < p.fx_magnet_until then
+            if world_time < p.fx_magnet_until then
                 pickup_r = c.r * 4
             end
-            for fi = 1, #_U["food_coins"] do
-                local f = _U["food_coins"][fi]
+            for fi = 1, #food_coins do
+                local f = food_coins[fi]
                 local fdx = c.x - f.x
                 local fdy = c.y - f.y
                 if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
                     c.gold = c.gold + food_val
-                    c.r = Combat.calc_radius(c.gold, _U["radius_base"], _U["radius_k"])
-                    f.x = _U["rng_spawn"]:int(50, _U["map_width"] - 50)
-                    f.y = _U["rng_spawn"]:int(50, _U["map_height"] - 50)
+                    c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+                    f.x = rng_spawn:int(50, map_width - 50)
+                    f.y = rng_spawn:int(50, map_height - 50)
                 end
             end
             -- 金币雨奖励豆：吃掉即移除（while 条件每轮重算 #bonus_food）
             local bi = 1
-            while bi <= #_U["bonus_food"] do
-                local f = _U["bonus_food"][bi]
+            while bi <= #bonus_food do
+                local f = bonus_food[bi]
                 local fdx = c.x - f.x
                 local fdy = c.y - f.y
                 if (fdx * fdx + fdy * fdy) < (pickup_r * pickup_r) then
                     c.gold = c.gold + food_val
-                    c.r = Combat.calc_radius(c.gold, _U["radius_base"], _U["radius_k"])
-                    table.remove(_U["bonus_food"], bi)
+                    c.r = Combat.calc_radius(c.gold, radius_base, radius_k)
+                    table.remove(bonus_food, bi)
                 else
                     bi = bi + 1
                 end
@@ -1240,7 +1258,16 @@ end
 -- 阶段 2：移动积分（方向 + 分裂冲量衰减）+ 边界
 local merge_pull = 2.0  -- 冷却后细胞向群体质心吸附的速率（1/秒）
 local function step_movement(dt)
-    for pid, p in pairs(_U["players"]) do
+    local players = _U["players"]
+    local world_time = _U["world_time"]
+    local merge_cooldown_s = _U["merge_cooldown_s"]
+    local radius_base = _U["radius_base"]
+    local move_speed = _U["move_speed"]
+    local split_friction = _U["split_friction"]
+    local map_width = _U["map_width"]
+    local map_height = _U["map_height"]
+
+    for pid, p in pairs(players) do
         -- 全部细胞都过合体冷却 → 计算金币加权质心，稍后施加吸附
         local all_old = true
         local gsum = 0
@@ -1248,7 +1275,7 @@ local function step_movement(dt)
         local wys = 0
         for ci = 1, #p.parts do
             local c0 = p.parts[ci]
-            if _U["world_time"] - c0.born < _U["merge_cooldown_s"] then
+            if world_time - c0.born < merge_cooldown_s then
                 all_old = false
             end
             gsum = gsum + c0.gold
@@ -1264,17 +1291,17 @@ local function step_movement(dt)
 
         for ci = 1, #p.parts do
             local c = p.parts[ci]
-            local speed_factor = 1.0 / (1.0 + (c.r - _U["radius_base"]) * 0.003)
-            if _U["world_time"] < p.fx_speed_until then
+            local speed_factor = 1.0 / (1.0 + (c.r - radius_base) * 0.003)
+            if world_time < p.fx_speed_until then
                 speed_factor = speed_factor * 1.5
             end
             if p.dx ~= 0 or p.dy ~= 0 or c.vx ~= 0 or c.vy ~= 0 then
-                local cur_speed = _U["move_speed"] * speed_factor
+                local cur_speed = move_speed * speed_factor
                 c.x = c.x + p.dx * cur_speed * dt + c.vx * dt
                 c.y = c.y + p.dy * cur_speed * dt + c.vy * dt
 
                 -- 冲量摩擦衰减
-                local decay = math.exp(-_U["split_friction"] * dt)
+                local decay = math.exp(-split_friction * dt)
                 c.vx = c.vx * decay
                 c.vy = c.vy * decay
                 if math.abs(c.vx) < 1 then c.vx = 0 end
@@ -1289,9 +1316,9 @@ local function step_movement(dt)
 
             -- 边界限制
             if c.x < c.r then c.x = c.r end
-            if c.x > _U["map_width"] - c.r then c.x = _U["map_width"] - c.r end
+            if c.x > map_width - c.r then c.x = map_width - c.r end
             if c.y < c.r then c.y = c.r end
-            if c.y > _U["map_height"] - c.r then c.y = _U["map_height"] - c.r end
+            if c.y > map_height - c.r then c.y = map_height - c.r end
         end
     end
 end
@@ -1463,15 +1490,21 @@ end
 
 -- 生成场景快照数据（每个细胞一条，cell 为细胞序号）
 function get_snapshot()
+    local players = _U["players"]
+    local world_time = _U["world_time"]
+    local food_coins = _U["food_coins"]
+    local bonus_food = _U["bonus_food"]
+    local powerups = _U["powerups"]
+
     local snap_list = {}
-    for pid, p in pairs(_U["players"]) do
+    for pid, p in pairs(players) do
         -- 当前生效中的道具特效（按护盾 > 加速 > 磁铁优先展示）
         local fx = nil
-        if _U["world_time"] < p.fx_shield_until then
+        if world_time < p.fx_shield_until then
             fx = "shield"
-        elseif _U["world_time"] < p.fx_speed_until then
+        elseif world_time < p.fx_speed_until then
             fx = "speed"
-        elseif _U["world_time"] < p.fx_magnet_until then
+        elseif world_time < p.fx_magnet_until then
             fx = "magnet"
         end
         for ci = 1, #p.parts do
@@ -1493,13 +1526,13 @@ function get_snapshot()
 
     -- 合并普通金币豆与金币雨奖励豆（奖励豆吃掉即消失）
     local merged_foods = {}
-    for i = 1, #_U["food_coins"] do
-        table.insert(merged_foods, _U["food_coins"][i])
+    for i = 1, #food_coins do
+        table.insert(merged_foods, food_coins[i])
     end
-    for i = 1, #_U["bonus_food"] do
-        table.insert(merged_foods, _U["bonus_food"][i])
+    for i = 1, #bonus_food do
+        table.insert(merged_foods, bonus_food[i])
     end
-    return snap_list, merged_foods, _U["powerups"]
+    return snap_list, merged_foods, powerups
 end
 
 function get_powerups()
