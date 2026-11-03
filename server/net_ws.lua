@@ -1,11 +1,11 @@
 package "NetWs"
 
-local ws_server_obj = nil
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("NetWs_U", "NetWs_U")
 -- init() 中重赋值，数值字面量初始化的文件级 local 是 static const（禁止再赋值），声明 nil
-local ws_port = nil
 
 -- 吞吐计数（供 Metrics UDP 推送）：运行时在 init() 中创建
-local counters = nil
 
 -- WebSocket 事件分发（C++ 回调入口）
 -- 注意：在此回调中不能修改本模块的 local upvalue（fakelua const 限制），
@@ -22,7 +22,7 @@ function on_event(type, connid, data, len, reason)
 
         -- 收到任何消息都刷新该连接的活跃时间
         World.touch_player(connid)
-        if counters ~= nil then counters.recv = counters.recv + 1 end
+        if _U["counters"] ~= nil then _U["counters"].recv = _U["counters"].recv + 1 end
 
         local ok, msg = pcall(function() return json.decode(data) end)
         if not ok or msg == nil or type_of(msg) ~= "table" then
@@ -127,24 +127,24 @@ end
 
 function init(cfg)
     if cfg == nil then cfg = {} end
-    ws_port = cfg["ws_port"] or 8081
+    _U["ws_port"] = cfg["ws_port"] or 8081
 
     local srv_cfg = {
-        port = ws_port,
+        port = _U["ws_port"],
         maxconn = 200,
         ws_path = "/"
     }
 
     local ok, srv = pcall(function() return net.ws_server(srv_cfg) end)
     if not ok or not srv then
-        print("[NetWs] Failed to create WebSocket server on port " .. tostring(ws_port) .. ": " .. tostring(srv))
+        print("[NetWs] Failed to create WebSocket server on port " .. tostring(_U["ws_port"]) .. ": " .. tostring(srv))
         return false
     end
 
-    ws_server_obj = srv
-    ws_server_obj:dispatch("NetWs.on_event")
+    _U["ws_server_obj"] = srv
+    _U["ws_server_obj"]:dispatch("NetWs.on_event")
 
-    counters = { recv = 0, sent = 0 }
+    _U["counters"] = { recv = 0, sent = 0 }
 
     ---- 事件总线订阅（init 仅执行一次；热更替换函数地址后自动命中新版）----
     -- 世界规则事件不再由 main 直接调用本模块，统一经 event.emit 派发，
@@ -153,7 +153,7 @@ function init(cfg)
     event.on("game.death", "NetWs.on_ev_death")
     event.on("game.feast", "NetWs.on_ev_feast")
 
-    print("[NetWs] WebSocket server listening on port " .. tostring(ws_port))
+    print("[NetWs] WebSocket server listening on port " .. tostring(_U["ws_port"]))
     return true
 end
 
@@ -174,22 +174,22 @@ end
 -- 发送玩家暂存消息（通过 p.connid，与 broadcast 同路径）
 -- 在主循环中调用，不在 C++ 回调上下文中
 function flush_login_responses()
-    if ws_server_obj == nil then return end
+    if _U["ws_server_obj"] == nil then return end
     local all_players = World.get_all_players()
     for pid, p in pairs(all_players) do
         if p.pending_login_ok ~= nil then
             local json_str = json.encode(p.pending_login_ok)
-            ws_server_obj:send(p.connid, json_str)
+            _U["ws_server_obj"]:send(p.connid, json_str)
             p.pending_login_ok = nil
         end
         if p.pending_rank ~= nil then
             local json_str = json.encode(p.pending_rank)
-            ws_server_obj:send(p.connid, json_str)
+            _U["ws_server_obj"]:send(p.connid, json_str)
             p.pending_rank = nil
         end
         if p.pending_chat ~= nil then
             local json_str = json.encode(p.pending_chat)
-            ws_server_obj:send(p.connid, json_str)
+            _U["ws_server_obj"]:send(p.connid, json_str)
             p.pending_chat = nil
         end
     end
@@ -223,12 +223,12 @@ end
 -- close_connection 会同步派发 close 事件；add_player 已先解除旧 conn 的映射，
 -- 故事件里的 remove_player_by_conn 是 no-op，不会波及新会话。
 function flush_kicks()
-    if ws_server_obj == nil then return end
+    if _U["ws_server_obj"] == nil then return end
 
     local closes = World.drain_pending_closes()
     if closes ~= nil then
         for i = 1, #closes do
-            ws_server_obj:close_connection(closes[i])
+            _U["ws_server_obj"]:close_connection(closes[i])
         end
     end
 
@@ -236,7 +236,7 @@ function flush_kicks()
     if kicks ~= nil then
         for i = 1, #kicks do
             local connid = kicks[i]
-            ws_server_obj:send(connid, json.encode({
+            _U["ws_server_obj"]:send(connid, json.encode({
                 type = "error",
                 reason = "账号已在别处登录"
             }))
@@ -249,7 +249,7 @@ function flush_kicks()
     if akicks ~= nil then
         for i = 1, #akicks do
             local item = akicks[i]
-            ws_server_obj:send(item["connid"], json.encode({
+            _U["ws_server_obj"]:send(item["connid"], json.encode({
                 type = "error",
                 reason = item["reason"]
             }))
@@ -259,20 +259,20 @@ function flush_kicks()
 end
 
 function send(connid, tbl)
-    if ws_server_obj == nil then return end
+    if _U["ws_server_obj"] == nil then return end
     local json_str = json.encode(tbl)
-    ws_server_obj:send(connid, json_str)
-    if counters ~= nil then counters.sent = counters.sent + 1 end
+    _U["ws_server_obj"]:send(connid, json_str)
+    if _U["counters"] ~= nil then _U["counters"].sent = _U["counters"].sent + 1 end
 end
 
 function broadcast(tbl)
-    if ws_server_obj == nil then return end
+    if _U["ws_server_obj"] == nil then return end
     local json_str = json.encode(tbl)
     local all_players = World.get_all_players()
     for pid, p in pairs(all_players) do
         if p.connid ~= nil then
-            ws_server_obj:send(p.connid, json_str)
-            if counters ~= nil then counters.sent = counters.sent + 1 end
+            _U["ws_server_obj"]:send(p.connid, json_str)
+            if _U["counters"] ~= nil then _U["counters"].sent = _U["counters"].sent + 1 end
         end
     end
 end
@@ -290,8 +290,8 @@ end
 
 -- 吞吐计数器（Metrics 周期读取）
 function get_counters()
-    if counters == nil then return { recv = 0, sent = 0 } end
-    return { recv = counters.recv, sent = counters.sent }
+    if _U["counters"] == nil then return { recv = 0, sent = 0 } end
+    return { recv = _U["counters"].recv, sent = _U["counters"].sent }
 end
 
 function broadcast_snapshot()
@@ -392,7 +392,7 @@ end
 --  2. 只建连未登录：建连超过 timeout_s 仍未进场（防止挂连接占满 maxconn）。
 -- close_connection 会同步触发 close 事件 → 走 unmark/remove_player_by_conn 正常清场
 function kick_idle(timeout_s)
-    if ws_server_obj == nil then return end
+    if _U["ws_server_obj"] == nil then return end
     if timeout_s == nil or timeout_s <= 0 then return end
     local now = os.time()
     local all_players = World.get_all_players()
@@ -403,7 +403,7 @@ function kick_idle(timeout_s)
            and (now - p.last_seen) > timeout_s then
             print("[NetWs] Kicking idle connection connid=" .. tostring(p.connid)
                   .. " player=" .. tostring(p.name) .. " (idle " .. tostring(now - p.last_seen) .. "s)")
-            ws_server_obj:close_connection(p.connid)
+            _U["ws_server_obj"]:close_connection(p.connid)
         end
     end
 
@@ -411,12 +411,12 @@ function kick_idle(timeout_s)
     for i = 1, #unauth do
         print("[NetWs] Kicking unauthenticated connection connid=" .. tostring(unauth[i])
               .. " (no login within " .. tostring(timeout_s) .. "s)")
-        ws_server_obj:close_connection(unauth[i])
+        _U["ws_server_obj"]:close_connection(unauth[i])
     end
 end
 
 function notify_died(victim_id, gold, x, y)
-    if ws_server_obj == nil then return end
+    if _U["ws_server_obj"] == nil then return end
     local all_players = World.get_all_players()
     local p = all_players[victim_id]
     if p ~= nil and p.connid ~= nil then
@@ -429,7 +429,7 @@ function notify_died(victim_id, gold, x, y)
             y = y
         }
         if p.alive == false then msg.out = true end
-        ws_server_obj:send(p.connid, json.encode(msg))
+        _U["ws_server_obj"]:send(p.connid, json.encode(msg))
     end
 end
 
@@ -437,14 +437,14 @@ end
 -- ws_server 是 NativeObject，事件回调（on_ev_*）与主循环都要用它发帧；壳跨帧失效，
 -- 因此每帧从 Store 取回。counters 是纯数据表，走 JSON。
 function persist()
-    Store.set("netws.server", ws_server_obj)
-    Store.set("netws.port", ws_port)
-    Store.set_json("netws.counters", counters)
+    Store.set("netws.server", _U["ws_server_obj"])
+    Store.set("netws.port", _U["ws_port"])
+    Store.set_json("netws.counters", _U["counters"])
 end
 
 function restore()
-    ws_server_obj = Store.get("netws.server")
-    ws_port = Store.get("netws.port")
-    counters = Store.get_json("netws.counters")
-    if counters == nil then counters = { recv = 0, sent = 0 } end
+    _U["ws_server_obj"] = Store.get("netws.server")
+    _U["ws_port"] = Store.get("netws.port")
+    _U["counters"] = Store.get_json("netws.counters")
+    if _U["counters"] == nil then _U["counters"] = { recv = 0, sent = 0 } end
 end

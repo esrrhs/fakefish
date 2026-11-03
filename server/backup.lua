@@ -1,5 +1,8 @@
 package "Backup"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Backup_U", "Backup_U")
 -- 加密世界备份（fakelua 模块组合：compress.zstd + crypto.aes_cbc + base64 + crc32 + uuid
 -- + random PCG + io/os 原子写）：
 --   data（motd/统计/排行榜/事件/feed）
@@ -10,16 +13,8 @@ package "Backup"
 --   任何字节被篡改都会在 CRC32 或解压阶段被检出；备份文件本身不含任何明文业务数据。
 -- 恢复仅回写 MOTD（安全、可验证），账号/世界运行态不做覆盖。
 
-local dir = nil
-local key = nil
-local keep = nil
-local rng = nil
 
 -- 定时自动备份（秒）：interval_s 为 nil/0 表示关闭；next_ts 为下次到期时间戳
-local interval_s = nil
-local next_ts = nil
-local last_backup_ts = nil
-local last_backup_name = nil
 
 local MAGIC = "FKBK1"
 local INNER_MAGIC = "FKBK"
@@ -32,31 +27,31 @@ function init(cfg)
         return
     end
 
-    dir = cfg["dir"] or "data/backups"
+    _U["dir"] = cfg["dir"] or "data/backups"
 
     local k = cfg["aes_key"]
     if type(k) ~= "string" or #k ~= 16 then
         print("[Backup] aes_key missing or not exactly 16 bytes (AES-128), backup disabled")
-        dir = nil
+        _U["dir"] = nil
         return
     end
-    key = k
+    _U["key"] = k
 
     local kp = tonumber(cfg["keep"])
     if kp == nil or kp ~= kp then kp = 10 end
     kp = math.floor(kp)
     if kp < 1 then kp = 1 end
     if kp > 50 then kp = 50 end
-    keep = kp
+    _U["keep"] = kp
 
-    os.mkdir(dir)
+    os.mkdir(_U["dir"])
 
     -- IV 随机源（PCG，os.time + os.clock 混合播种；IV 无需保密，只需不可预测）
     local seed = math.floor(os.time() + os.clock() * 1000000)
-    rng = random.new(seed)
+    _U["rng"] = random.new(seed)
 
-    print("[Backup] encrypted backup vault ready at " .. dir
-          .. " (AES-" .. tostring(#key * 8) .. ", keep=" .. tostring(keep) .. ")")
+    print("[Backup] encrypted backup vault ready at " .. _U["dir"]
+          .. " (AES-" .. tostring(#_U["key"] * 8) .. ", keep=" .. tostring(_U["keep"]) .. ")")
 
     -- 定时备份周期（默认 0=关闭；钳到 1..86400 秒）
     local iv = tonumber(cfg["interval_s"])
@@ -64,15 +59,15 @@ function init(cfg)
         iv = math.floor(iv)
         if iv > 86400 then iv = 86400 end
         if iv >= 1 then
-            interval_s = iv
-            next_ts = os.time() + iv
+            _U["interval_s"] = iv
+            _U["next_ts"] = os.time() + iv
             print("[Backup] scheduled backup every " .. tostring(iv) .. "s")
         end
     end
 end
 
 function is_ready()
-    return dir ~= nil and key ~= nil
+    return _U["dir"] ~= nil and _U["key"] ~= nil
 end
 
 -- ---- 定时自动备份调度 ----
@@ -84,11 +79,11 @@ function set_interval(sec)
     if v == nil or v ~= v then return false, "interval_s must be a number" end
     v = math.floor(v)
     if v < 0 or v > 86400 then return false, "interval_s out of range (0..86400)" end
-    interval_s = v
+    _U["interval_s"] = v
     if v > 0 then
-        next_ts = os.time() + v
+        _U["next_ts"] = os.time() + v
     else
-        next_ts = nil
+        _U["next_ts"] = nil
     end
     return true, schedule_status()
 end
@@ -97,34 +92,34 @@ end
 -- 停机/卡住错过多个周期也只补一次，避免恢复后备份风暴
 function pop_due()
     if not is_ready() then return false end
-    if interval_s == nil or interval_s <= 0 or next_ts == nil then return false end
-    if os.time() < next_ts then return false end
-    next_ts = os.time() + interval_s
+    if _U["interval_s"] == nil or _U["interval_s"] <= 0 or _U["next_ts"] == nil then return false end
+    if os.time() < _U["next_ts"] then return false end
+    _U["next_ts"] = os.time() + _U["interval_s"]
     return true
 end
 
 -- 调度与最近备份状态（HTTP status 动作/健康探针用）
 function schedule_status()
     local enabled = false
-    if interval_s ~= nil and interval_s > 0 then enabled = true end
+    if _U["interval_s"] ~= nil and _U["interval_s"] > 0 then enabled = true end
     local next_in = nil
-    if next_ts ~= nil then
-        next_in = next_ts - os.time()
+    if _U["next_ts"] ~= nil then
+        next_in = _U["next_ts"] - os.time()
         if next_in < 0 then next_in = 0 end
     end
     return {
         enabled = enabled,
-        interval_s = interval_s or 0,
+        interval_s = _U["interval_s"] or 0,
         next_in_s = next_in,
-        last_ts = last_backup_ts,
-        last_name = last_backup_name
+        last_ts = _U["last_backup_ts"],
+        last_name = _U["last_backup_name"]
     }
 end
 
 local function random_iv()
     local parts = {}
     for i = 1, 16 do
-        parts[i] = string.char(rng:int(0, 255))
+        parts[i] = string.char(_U["rng"]:int(0, 255))
     end
     return table.concat(parts, "")
 end
@@ -179,7 +174,7 @@ local function resolve_name(v)
     end
     if string.sub(v, -5) == ".fkbk" then return v end
     -- 当作 id（完整 uuid 或 8 位短 id）：扫描唯一匹配
-    local files = os.listdir(dir)
+    local files = os.listdir(_U["dir"])
     if type(files) ~= "table" then return nil end
     local hit = nil
     for i = 1, #files do
@@ -194,7 +189,7 @@ local function resolve_name(v)
 end
 
 local function read_envelope_file(name)
-    local path = os.join(dir, name)
+    local path = os.join(_U["dir"], name)
     local f = io.open(path, "rb")
     if not f then return nil, "file not found: " .. name end
     local content = f:read("*a")
@@ -231,7 +226,7 @@ local function open_envelope(env)
         return false, "crc32 mismatch (ciphertext tampered or truncated)"
     end
 
-    local ok_d, packed = pcall(function() return crypto.aes_decrypt_cbc(ct, key, iv) end)
+    local ok_d, packed = pcall(function() return crypto.aes_decrypt_cbc(ct, _U["key"], iv) end)
     if not ok_d or type(packed) ~= "string" then
         return false, "AES decrypt failed (wrong key or tampered payload)"
     end
@@ -285,13 +280,13 @@ function create(reason, actor)
     end
 
     local iv = random_iv()
-    local ok_e, ct = pcall(function() return crypto.aes_encrypt_cbc(packed, key, iv) end)
+    local ok_e, ct = pcall(function() return crypto.aes_encrypt_cbc(packed, _U["key"], iv) end)
     if not ok_e or type(ct) ~= "string" then
         return false, "AES encrypt failed: " .. tostring(ct)
     end
 
     local name = name_for(ts, id)
-    local path = os.join(dir, name)
+    local path = os.join(_U["dir"], name)
     local env = {
         magic = MAGIC,
         id = id,
@@ -306,8 +301,8 @@ function create(reason, actor)
     if not okw then return false, werr end
 
     prune()
-    last_backup_ts = ts
-    last_backup_name = name
+    _U["last_backup_ts"] = ts
+    _U["last_backup_name"] = name
     pcall(function() Audit.record("backup.create", name, reason, actor) end)
     pcall(function() log.info("[backup] created " .. name .. " (" .. tostring(#ct) .. " bytes ciphertext)") end)
     print("[Backup] created " .. name)
@@ -335,7 +330,7 @@ end
 function list_backups()
     local out = {}
     if not is_ready() then return out end
-    local files = os.listdir(dir)
+    local files = os.listdir(_U["dir"])
     if type(files) ~= "table" then return out end
 
     for i = 1, #files do
@@ -436,7 +431,7 @@ function delete(v, actor)
     if not is_ready() then return false, "backup disabled" end
     local name = resolve_name(v)
     if name == nil then return false, "backup not found or ambiguous id" end
-    local path = os.join(dir, name)
+    local path = os.join(_U["dir"], name)
     if not os.isfile(path) then return false, "file not found: " .. name end
     local ok, err = pcall(function() os.remove(path) end)
     if not ok then return false, "remove failed: " .. tostring(err) end
@@ -450,12 +445,12 @@ function prune()
     if not is_ready() then return end
     local all = list_backups()
     local n = #all
-    if n <= keep then return end
-    for i = keep + 1, n do
+    if n <= _U["keep"] then return end
+    for i = _U["keep"] + 1, n do
         if all[i]["corrupt"] ~= true then
-            pcall(function() os.remove(os.join(dir, all[i]["name"])) end)
+            pcall(function() os.remove(os.join(_U["dir"], all[i]["name"])) end)
         else
-            pcall(function() os.remove(os.join(dir, all[i]["name"])) end)
+            pcall(function() os.remove(os.join(_U["dir"], all[i]["name"])) end)
         end
     end
 end
@@ -463,27 +458,27 @@ end
 -- ---- 热更支持 ----
 function hotfix_save()
     local s = {}
-    s["dir"] = dir
-    s["key"] = key
-    s["keep"] = keep
-    s["rng"] = rng
-    s["interval_s"] = interval_s
-    s["next_ts"] = next_ts
-    s["last_backup_ts"] = last_backup_ts
-    s["last_backup_name"] = last_backup_name
+    s["dir"] = _U["dir"]
+    s["key"] = _U["key"]
+    s["keep"] = _U["keep"]
+    s["rng"] = _U["rng"]
+    s["interval_s"] = _U["interval_s"]
+    s["next_ts"] = _U["next_ts"]
+    s["last_backup_ts"] = _U["last_backup_ts"]
+    s["last_backup_name"] = _U["last_backup_name"]
     return s
 end
 
 function hotfix_restore(s)
     if s == nil then return end
-    dir = s["dir"]
-    key = s["key"]
-    keep = s["keep"]
-    rng = s["rng"]
-    interval_s = s["interval_s"]
-    next_ts = s["next_ts"]
-    last_backup_ts = s["last_backup_ts"]
-    last_backup_name = s["last_backup_name"]
+    _U["dir"] = s["dir"]
+    _U["key"] = s["key"]
+    _U["keep"] = s["keep"]
+    _U["rng"] = s["rng"]
+    _U["interval_s"] = s["interval_s"]
+    _U["next_ts"] = s["next_ts"]
+    _U["last_backup_ts"] = s["last_backup_ts"]
+    _U["last_backup_name"] = s["last_backup_name"]
 end
 
 -- ---- 帧边界持久化 ----
@@ -493,23 +488,23 @@ end
 -- "expects 0 argument(s), got 2" 而回 500。故统一加 frame_ 前缀。
 -- rng 是 random NativeObject；其余是配置标量与调度时间戳。
 function frame_persist()
-    Store.set("backup.dir", dir)
-    Store.set("backup.key", key)
-    Store.set("backup.keep", keep)
-    Store.set("backup.rng", rng)
-    Store.set("backup.interval_s", interval_s)
-    Store.set("backup.next_ts", next_ts)
-    Store.set("backup.last_ts", last_backup_ts)
-    Store.set("backup.last_name", last_backup_name)
+    Store.set("backup.dir", _U["dir"])
+    Store.set("backup.key", _U["key"])
+    Store.set("backup.keep", _U["keep"])
+    Store.set("backup.rng", _U["rng"])
+    Store.set("backup.interval_s", _U["interval_s"])
+    Store.set("backup.next_ts", _U["next_ts"])
+    Store.set("backup.last_ts", _U["last_backup_ts"])
+    Store.set("backup.last_name", _U["last_backup_name"])
 end
 
 function frame_restore()
-    dir = Store.get("backup.dir")
-    key = Store.get("backup.key")
-    keep = Store.get("backup.keep")
-    rng = Store.get("backup.rng")
-    interval_s = Store.get("backup.interval_s")
-    next_ts = Store.get("backup.next_ts")
-    last_backup_ts = Store.get("backup.last_ts")
-    last_backup_name = Store.get("backup.last_name")
+    _U["dir"] = Store.get("backup.dir")
+    _U["key"] = Store.get("backup.key")
+    _U["keep"] = Store.get("backup.keep")
+    _U["rng"] = Store.get("backup.rng")
+    _U["interval_s"] = Store.get("backup.interval_s")
+    _U["next_ts"] = Store.get("backup.next_ts")
+    _U["last_backup_ts"] = Store.get("backup.last_ts")
+    _U["last_backup_name"] = Store.get("backup.last_name")
 end

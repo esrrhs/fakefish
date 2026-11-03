@@ -1,5 +1,8 @@
 package "Metrics"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Metrics_U", "Metrics_U")
 -- UDP 指标推送口（fakelua net.udp_server）。
 --
 -- 采集模型（拉式注册 + 周期推送）：
@@ -11,16 +14,11 @@ package "Metrics"
 -- net 回调运行于 C++ 派发上下文：只能写运行时 table(peers) 的字段，
 -- 不能改文件级 upvalue；推送(send)全部在主循环 push() 中完成。
 
-local udp_obj = nil
-local udp_port = nil
-local peers = nil          -- 运行时：key "ip:port" -> { ip=, port= }
-local tick_count = nil
-local interval_s = nil
 
 function init(cfg)
-    peers = {}
-    tick_count = 0
-    interval_s = 5
+    _U["peers"] = {}
+    _U["tick_count"] = 0
+    _U["interval_s"] = 5
     if cfg == nil then cfg = {} end
 
     if cfg["enabled"] == false then
@@ -30,8 +28,8 @@ function init(cfg)
 
     local ip = cfg["ip"] or "127.0.0.1"
     local port = cfg["port"] or 8092
-    interval_s = cfg["interval_s"] or 5
-    if interval_s < 1 then interval_s = 1 end
+    _U["interval_s"] = cfg["interval_s"] or 5
+    if _U["interval_s"] < 1 then _U["interval_s"] = 1 end
 
     local ok, obj = pcall(function()
         return net.udp_server({ ip = ip, port = port })
@@ -41,19 +39,19 @@ function init(cfg)
         return
     end
 
-    udp_obj = obj
-    udp_obj:dispatch("Metrics.on_event")
-    udp_port = udp_obj:get_port()
-    print("[Metrics] UDP metrics endpoint listening on " .. ip .. ":" .. tostring(udp_port)
-          .. " (push every " .. tostring(interval_s) .. "s)")
+    _U["udp_obj"] = obj
+    _U["udp_obj"]:dispatch("Metrics.on_event")
+    _U["udp_port"] = _U["udp_obj"]:get_port()
+    print("[Metrics] UDP metrics endpoint listening on " .. ip .. ":" .. tostring(_U["udp_port"])
+          .. " (push every " .. tostring(_U["interval_s"]) .. "s)")
 end
 
 -- net UDP 事件回调（C++ 派发上下文）
 function on_event(typ, connid, data, len, reason)
     if typ ~= "recv" then return end
-    if udp_obj == nil or peers == nil then return end
+    if _U["udp_obj"] == nil or _U["peers"] == nil then return end
 
-    local ip, port = udp_obj:get_peer()
+    local ip, port = _U["udp_obj"]:get_peer()
     if ip == nil or port == nil then return end
     local key = tostring(ip) .. ":" .. tostring(port)
 
@@ -67,28 +65,28 @@ function on_event(typ, connid, data, len, reason)
     end
 
     if action == "unregister" then
-        peers[key] = nil
+        _U["peers"][key] = nil
     else
-        peers[key] = { ip = tostring(ip), port = port }
+        _U["peers"][key] = { ip = tostring(ip), port = port }
     end
 end
 
 function is_ready()
-    return udp_obj ~= nil
+    return _U["udp_obj"] ~= nil
 end
 
 function peer_count()
-    if peers == nil then return 0 end
+    if _U["peers"] == nil then return 0 end
     local n = 0
-    for _ in pairs(peers) do n = n + 1 end
+    for _ in pairs(_U["peers"]) do n = n + 1 end
     return n
 end
 
 -- 主循环每秒调用；内部按 interval_s 节流，无 peer 时不组包
 function push()
-    if udp_obj == nil or peers == nil then return end
-    tick_count = tick_count + 1
-    if tick_count % interval_s ~= 0 then return end
+    if _U["udp_obj"] == nil or _U["peers"] == nil then return end
+    _U["tick_count"] = _U["tick_count"] + 1
+    if _U["tick_count"] % _U["interval_s"] ~= 0 then return end
 
     local n = peer_count()
     if n == 0 then return end
@@ -106,11 +104,11 @@ function push()
         metric_peers = n
     })
 
-    for key, peer in pairs(peers) do
-        local ok, err = pcall(function() udp_obj:send(payload, peer.ip, peer.port) end)
+    for key, peer in pairs(_U["peers"]) do
+        local ok, err = pcall(function() _U["udp_obj"]:send(payload, peer.ip, peer.port) end)
         if not ok then
             print("[Metrics] push failed to " .. key .. ": " .. tostring(err))
-            peers[key] = nil
+            _U["peers"][key] = nil
         end
     end
 end
@@ -118,18 +116,18 @@ end
 -- ---- 帧边界持久化 ----
 -- udp socket 是 NativeObject；peers 以 "ip:port" 字符串为键，JSON 编码安全。
 function persist()
-    Store.set("metrics.udp", udp_obj)
-    Store.set("metrics.port", udp_port)
-    Store.set("metrics.interval_s", interval_s)
-    Store.set("metrics.tick_count", tick_count)
-    Store.set_json("metrics.peers", peers)
+    Store.set("metrics.udp", _U["udp_obj"])
+    Store.set("metrics.port", _U["udp_port"])
+    Store.set("metrics.interval_s", _U["interval_s"])
+    Store.set("metrics.tick_count", _U["tick_count"])
+    Store.set_json("metrics.peers", _U["peers"])
 end
 
 function restore()
-    udp_obj = Store.get("metrics.udp")
-    udp_port = Store.get("metrics.port")
-    interval_s = Store.get("metrics.interval_s")
-    tick_count = Store.get("metrics.tick_count")
-    peers = Store.get_json("metrics.peers")
-    if peers == nil then peers = {} end
+    _U["udp_obj"] = Store.get("metrics.udp")
+    _U["udp_port"] = Store.get("metrics.port")
+    _U["interval_s"] = Store.get("metrics.interval_s")
+    _U["tick_count"] = Store.get("metrics.tick_count")
+    _U["peers"] = Store.get_json("metrics.peers")
+    if _U["peers"] == nil then _U["peers"] = {} end
 end

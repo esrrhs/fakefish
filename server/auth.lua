@@ -1,20 +1,18 @@
 package "Auth"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Auth_U", "Auth_U")
 -- 旧版固定盐（仅用于识别/校验历史账号哈希；新注册一律使用每账号随机盐）
 local LEGACY_SALT = "fakefish_salt_2026"
 
 -- 游客登录（免注册直接进场），由 main 在启动时用 guest 配置段初始化一次。
 -- P1-3：模块级可变标量一律 nil 声明、在 init() 里赋运行时值，否则全常量赋值
 -- 会被推断成 const，后续赋值点直接编译失败。
-local guest_enabled = nil
-local guest_auto_enter = nil
-local guest_prefix = nil
 -- 独立 PCG 流：游客昵称后缀。:int() 推进的是 NativeObject 内部状态，
 -- 不写模块级 local，因此在 WS recv 回调上下文里调用也是安全的（P1-6）。
-local guest_rng = nil
 -- 游客凭证的签名密钥。凭证 = sha256(secret .. ":" .. username)，密钥不入库、不下发，
 -- 因此无法凭昵称反推凭证，也无法伪造他人身份。
-local guest_secret = nil
 
 local GUEST_SECRET_FILE = "data/.guest_secret"
 
@@ -53,8 +51,8 @@ end
 
 -- 为游客昵称签发凭证
 local function guest_token_for(name)
-    if guest_secret == nil or name == nil then return nil end
-    return crypto.sha256(guest_secret .. ":" .. tostring(name))
+    if _U["guest_secret"] == nil or name == nil then return nil end
+    return crypto.sha256(_U["guest_secret"] .. ":" .. tostring(name))
 end
 
 -- 昵称防御：客户端会把 name 带回，即使凭证校验通过也再挡一次引号/反斜杠，
@@ -70,44 +68,44 @@ end
 
 -- 游客配置初始化（main 启动时调用；绝不能在 WS 回调上下文中执行）
 function init(cfg)
-    guest_enabled = false
-    guest_auto_enter = false
-    guest_prefix = "游客"
-    guest_secret = nil
+    _U["guest_enabled"] = false
+    _U["guest_auto_enter"] = false
+    _U["guest_prefix"] = "游客"
+    _U["guest_secret"] = nil
 
     if cfg ~= nil then
         local e = cfg["enabled"]
-        if e == true or e == "true" then guest_enabled = true end
+        if e == true or e == "true" then _U["guest_enabled"] = true end
         local a = cfg["auto_enter"]
-        if a == true or a == "true" then guest_auto_enter = true end
+        if a == true or a == "true" then _U["guest_auto_enter"] = true end
         local p = cfg["prefix"]
         if p ~= nil and type_of(p) == "string" and #p > 0 then
-            guest_prefix = p
+            _U["guest_prefix"] = p
         end
         local s = cfg["secret"]
         if s ~= nil and type_of(s) == "string" and #s > 0 then
-            guest_secret = s
+            _U["guest_secret"] = s
         end
     end
 
-    if guest_secret == nil then
-        guest_secret = load_or_create_secret()
+    if _U["guest_secret"] == nil then
+        _U["guest_secret"] = load_or_create_secret()
     end
 
-    guest_rng = random.new(os.time() + 12345)
+    _U["guest_rng"] = random.new(os.time() + 12345)
 
     local state = "disabled"
-    if guest_enabled then state = "enabled" end
-    print("[Auth] guest login " .. state .. " (auto_enter=" .. tostring(guest_auto_enter)
-          .. ", prefix=" .. guest_prefix .. ")")
+    if _U["guest_enabled"] then state = "enabled" end
+    print("[Auth] guest login " .. state .. " (auto_enter=" .. tostring(_U["guest_auto_enter"])
+          .. ", prefix=" .. _U["guest_prefix"] .. ")")
 end
 
 -- 供 HTTP GET /api/guest 暴露给前端（仅这三项开关，不含任何敏感信息）
 function guest_info()
     return {
-        enabled = guest_enabled,
-        auto_enter = guest_auto_enter,
-        prefix = guest_prefix
+        enabled = _U["guest_enabled"],
+        auto_enter = _U["guest_auto_enter"],
+        prefix = _U["guest_prefix"]
     }
 end
 
@@ -242,7 +240,7 @@ end
 local function create_guest(connid, name)
     if name == nil then
         for i = 1, 50 do
-            local cand = guest_prefix .. tostring(guest_rng:int(1000, 9999))
+            local cand = _U["guest_prefix"] .. tostring(_U["guest_rng"]:int(1000, 9999))
             if DB.memory_account(cand) == nil then
                 name = cand
                 break
@@ -268,7 +266,7 @@ end
 -- 战绩（gold/best_gold/kills/deaths）因此得以延续。校验不通过一律降级为新游客，
 -- 不报错——清了 localStorage、清库或换了服务端密钥都不该把人卡在登录页。
 function begin_guest(connid, name, token)
-    if not guest_enabled then
+    if not _U["guest_enabled"] then
         World.enqueue_response(connid, { type = "login_fail", reason = "游客登录已关闭，请先注册账号" })
         return
     end
@@ -441,17 +439,17 @@ end
 -- 每次 update 是独立顶层 Call，文件级 local 里的 VarTable / NativeObject 壳在帧末
 -- 即失效，因此状态统一落 Store（C++ 堆），帧初再取回。
 function persist()
-    Store.set("auth.guest_enabled", guest_enabled)
-    Store.set("auth.guest_auto_enter", guest_auto_enter)
-    Store.set("auth.guest_prefix", guest_prefix)
-    Store.set("auth.guest_secret", guest_secret)
-    Store.set("auth.guest_rng", guest_rng)
+    Store.set("auth.guest_enabled", _U["guest_enabled"])
+    Store.set("auth.guest_auto_enter", _U["guest_auto_enter"])
+    Store.set("auth.guest_prefix", _U["guest_prefix"])
+    Store.set("auth.guest_secret", _U["guest_secret"])
+    Store.set("auth.guest_rng", _U["guest_rng"])
 end
 
 function restore()
-    guest_enabled = Store.get("auth.guest_enabled")
-    guest_auto_enter = Store.get("auth.guest_auto_enter")
-    guest_prefix = Store.get("auth.guest_prefix")
-    guest_secret = Store.get("auth.guest_secret")
-    guest_rng = Store.get("auth.guest_rng")
+    _U["guest_enabled"] = Store.get("auth.guest_enabled")
+    _U["guest_auto_enter"] = Store.get("auth.guest_auto_enter")
+    _U["guest_prefix"] = Store.get("auth.guest_prefix")
+    _U["guest_secret"] = Store.get("auth.guest_secret")
+    _U["guest_rng"] = Store.get("auth.guest_rng")
 end

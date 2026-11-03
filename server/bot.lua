@@ -1,11 +1,12 @@
 package "Bot"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Bot_U", "Bot_U")
 -- AI 机器人：让单人试玩时世界有生命感。
 -- 机器人是 World 里的普通玩家实体（is_bot=true），
 -- 本模块只负责每帧写 p.dx/p.dy 移动意图，物理与吞噬由 World/Combat 统一结算。
 
-local bot_count = nil
-local bot_max_gold = nil
 
 -- AI 感知参数（只读常量，模块级赋值安全）
 local sight_food = 500      -- 觅食感知半径
@@ -16,28 +17,26 @@ local decision_max = 2.5    -- 决策间隔上限（秒）
 local bot_names = { "泡泡", "小鱼干", "大胃王", "闪电球", "夜行者", "贪吃鬼", "小钢炮", "软糖", "浪里白条", "深海刺客" }
 
 -- 注意：模块级 table 会被 fakelua JIT 标记为 const，必须运行时在 init() 中创建
-local bots = nil
 
 -- Bot 专用 PCG 随机流（决策间隔/游荡方向），与 World 的出生点、金币雨流互不关联
-local rng_ai = nil
 
 function init(cfg)
-    bots = {}
+    _U["bots"] = {}
     if cfg == nil then cfg = {} end
-    bot_count = cfg["bot_count"] or 3
-    bot_max_gold = cfg["bot_max_gold"] or 2000
+    _U["bot_count"] = cfg["bot_count"] or 3
+    _U["bot_max_gold"] = cfg["bot_max_gold"] or 2000
     -- 独立偏移拉开与 World 两路流的初态（同一秒启动也不同序列）
-    rng_ai = random.new(os.time() + 40503)
-    if bot_count <= 0 then return end
-    if bot_count > #bot_names then bot_count = #bot_names end
+    _U["rng_ai"] = random.new(os.time() + 40503)
+    if _U["bot_count"] <= 0 then return end
+    if _U["bot_count"] > #bot_names then _U["bot_count"] = #bot_names end
 
-    for i = 1, bot_count do
+    for i = 1, _U["bot_count"] do
         local p = World.add_bot(bot_names[i])
         if p ~= nil then
-            table.insert(bots, p)
+            table.insert(_U["bots"], p)
         end
     end
-    print("[Bot] Spawned " .. tostring(#bots) .. " bots")
+    print("[Bot] Spawned " .. tostring(#_U["bots"]) .. " bots")
 end
 
 local function dist(x1, y1, x2, y2)
@@ -48,7 +47,7 @@ end
 
 -- 为单个机器人做一次决策，写入 ai_dx/ai_dy 与 ai_timer
 local function decide(p)
-    p.ai_timer = decision_min + rng_ai:float(0, 1) * (decision_max - decision_min)
+    p.ai_timer = decision_min + _U["rng_ai"]:float(0, 1) * (decision_max - decision_min)
 
     -- 一局制：出局状态下没有细胞，下面的 my_big/my_small 会索引到 nil
     if p.parts == nil or #p.parts == 0 then
@@ -84,8 +83,8 @@ local function decide(p)
     end
 
     -- 已吃撑的机器人不再主动觅食/猎杀，只游荡，避免一家独大
-    if my_total >= bot_max_gold then
-        local a = rng_ai:float(0, 6.28318)
+    if my_total >= _U["bot_max_gold"] then
+        local a = _U["rng_ai"]:float(0, 6.28318)
         p.ai_dx = math.cos(a)
         p.ai_dy = math.sin(a)
         return
@@ -198,16 +197,16 @@ local function decide(p)
     end
 
     -- 5) 游荡
-    local a = rng_ai:float(0, 6.28318)
+    local a = _U["rng_ai"]:float(0, 6.28318)
     p.ai_dx = math.cos(a)
     p.ai_dy = math.sin(a)
 end
 
 -- 每帧更新机器人意图（在 World.update 之前调用）
 function update(dt)
-    if bots == nil then return end
-    for i = 1, #bots do
-        local p = bots[i]
+    if _U["bots"] == nil then return end
+    for i = 1, #_U["bots"] do
+        local p = _U["bots"][i]
         -- 一局制：被淘汰的机器人在本局不再决策（parts 为空，decide 会取到 nil 细胞）
         if p.alive == false then
             p.dx = 0
@@ -229,17 +228,17 @@ end
 -- 快照同样用 plain table 构造。
 function hotfix_save()
     local s = {}
-    s["bot_count"] = bot_count
-    s["bot_max_gold"] = bot_max_gold
+    s["bot_count"] = _U["bot_count"]
+    s["bot_max_gold"] = _U["bot_max_gold"]
     local ids = {}
-    if bots ~= nil then
-        for i = 1, #bots do
-            ids[i] = bots[i].id
+    if _U["bots"] ~= nil then
+        for i = 1, #_U["bots"] do
+            ids[i] = _U["bots"][i].id
         end
     end
     s["bot_ids"] = ids
-    if rng_ai ~= nil then
-        local ok, st = pcall(function() return rng_ai:get_state() end)
+    if _U["rng_ai"] ~= nil then
+        local ok, st = pcall(function() return _U["rng_ai"]:get_state() end)
         if ok then s["rng_ai_state"] = st end
     end
     return s
@@ -248,13 +247,13 @@ end
 -- 热更：按 id 到当前世界重绑；找不到（世界未迁移且实体已消失）则跳过
 function hotfix_restore(s)
     if s == nil then return end
-    bot_count = s["bot_count"]
-    bot_max_gold = s["bot_max_gold"]
-    if rng_ai == nil then
-        rng_ai = random.new(os.time() + 40503)
+    _U["bot_count"] = s["bot_count"]
+    _U["bot_max_gold"] = s["bot_max_gold"]
+    if _U["rng_ai"] == nil then
+        _U["rng_ai"] = random.new(os.time() + 40503)
     end
     if s["rng_ai_state"] ~= nil then
-        pcall(function() rng_ai:set_state(s["rng_ai_state"]) end)
+        pcall(function() _U["rng_ai"]:set_state(s["rng_ai_state"]) end)
     end
     local list = {}
     local all = World.get_all_players()
@@ -267,29 +266,29 @@ function hotfix_restore(s)
             end
         end
     end
-    bots = list
+    _U["bots"] = list
 end
 
 -- ---- 帧边界持久化 ----
 -- bots 只存 pid 列表：机器人实体本身在 World 的 players 里（随 world 状态桥接），
 -- 每帧按 id 重新绑定，避免重复编码同一份玩家数据。
 function persist()
-    Store.set("bot.count", bot_count)
-    Store.set("bot.max_gold", bot_max_gold)
-    Store.set("bot.rng_ai", rng_ai)
+    Store.set("bot.count", _U["bot_count"])
+    Store.set("bot.max_gold", _U["bot_max_gold"])
+    Store.set("bot.rng_ai", _U["rng_ai"])
     local ids = {}
-    if bots ~= nil then
-        for i = 1, #bots do
-            if bots[i] ~= nil then ids[#ids + 1] = bots[i].id end
+    if _U["bots"] ~= nil then
+        for i = 1, #_U["bots"] do
+            if _U["bots"][i] ~= nil then ids[#ids + 1] = _U["bots"][i].id end
         end
     end
     Store.set_json("bot.ids", ids)
 end
 
 function restore()
-    bot_count = Store.get("bot.count")
-    bot_max_gold = Store.get("bot.max_gold")
-    rng_ai = Store.get("bot.rng_ai")
+    _U["bot_count"] = Store.get("bot.count")
+    _U["bot_max_gold"] = Store.get("bot.max_gold")
+    _U["rng_ai"] = Store.get("bot.rng_ai")
     local ids = Store.get_json("bot.ids")
     local list = {}
     if ids ~= nil then
@@ -299,5 +298,5 @@ function restore()
             if p ~= nil then table.insert(list, p) end
         end
     end
-    bots = list
+    _U["bots"] = list
 end

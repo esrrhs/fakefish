@@ -1,5 +1,8 @@
 package "Admin"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Admin_U", "Admin_U")
 -- 管理接口（全部经 hotfix_token 鉴权，token 未配置则一律拒绝）：
 --   POST /api/admin/run  { "cmd": "<白名单名>" }
 --     执行配置文件里登记的子进程（fakelua process.run，不走 shell、无拼接参数），
@@ -19,9 +22,6 @@ package "Admin"
 --         unix: ["uname", "-s"]
 --         windows: ["cmd.exe", "/d", "/s", "/c", "ver"]
 
-local admin_token = nil
-local commands = nil
-local timeout_ms = nil
 
 -- Windows 下 process.run 同样不经 shell：echo 是 shell 内建、系统里没有 echo.exe。
 -- 系统环境变量 OS=Windows_NT 自 Windows NT 起默认存在，Unix 不会同名设置，用作平台判定。
@@ -37,11 +37,11 @@ local function resolve_command_argv(entry)
 end
 
 function init(cfg, srv_cfg)
-    commands = {}
-    timeout_ms = 3000
+    _U["commands"] = {}
+    _U["timeout_ms"] = 3000
 
     if srv_cfg ~= nil then
-        admin_token = srv_cfg["hotfix_token"]
+        _U["admin_token"] = srv_cfg["hotfix_token"]
     end
 
     if cfg == nil then cfg = {} end
@@ -52,8 +52,8 @@ function init(cfg, srv_cfg)
 
     local tm = tonumber(cfg["run_timeout_ms"])
     if tm ~= nil and tm == tm and tm > 0 then
-        timeout_ms = math.floor(tm)
-        if timeout_ms > 10000 then timeout_ms = 10000 end
+        _U["timeout_ms"] = math.floor(tm)
+        if _U["timeout_ms"] > 10000 then _U["timeout_ms"] = 10000 end
     end
 
     local cmds = cfg["commands"]
@@ -68,21 +68,21 @@ function init(cfg, srv_cfg)
                         break
                     end
                 end
-                if valid then commands[name] = argv end
+                if valid then _U["commands"][name] = argv end
             end
         end
     end
 
     local ncmd = 0
-    for _ in pairs(commands) do ncmd = ncmd + 1 end
-    print("[Admin] admin API ready (timeout " .. tostring(timeout_ms)
+    for _ in pairs(_U["commands"]) do ncmd = ncmd + 1 end
+    print("[Admin] admin API ready (timeout " .. tostring(_U["timeout_ms"])
           .. "ms, whitelisted commands=" .. tostring(ncmd) .. ")")
 end
 
 function check_token(t)
-    if admin_token == nil or admin_token == "" then return false end
+    if _U["admin_token"] == nil or _U["admin_token"] == "" then return false end
     if type(t) ~= "string" then return false end
-    return t == admin_token
+    return t == _U["admin_token"]
 end
 
 -- 执行白名单命令：cmd 必须精确命中配置名，argv 完全来自配置（客户端不能附加参数）。
@@ -91,7 +91,7 @@ function run(cmd)
     if type(cmd) ~= "string" or cmd == "" then
         return false, "cmd required"
     end
-    local argv = commands[cmd]
+    local argv = _U["commands"][cmd]
     if argv == nil then
         return false, "unknown command: " .. cmd
     end
@@ -101,7 +101,7 @@ function run(cmd)
     for i = 1, #argv do argv_copy[i] = argv[i] end
 
     local ok, out, err, code = pcall(function()
-        return process.run(argv_copy, { timeout_ms = timeout_ms })
+        return process.run(argv_copy, { timeout_ms = _U["timeout_ms"] })
     end)
     if not ok then
         return false, tostring(out)
@@ -112,13 +112,13 @@ end
 -- ---- 帧边界持久化 ----
 -- commands 是「命令名 -> argv 数组」白名单，字符串键，JSON 编码安全。
 function persist()
-    Store.set("admin.token", admin_token)
-    Store.set("admin.timeout_ms", timeout_ms)
-    Store.set_json("admin.commands", commands)
+    Store.set("admin.token", _U["admin_token"])
+    Store.set("admin.timeout_ms", _U["timeout_ms"])
+    Store.set_json("admin.commands", _U["commands"])
 end
 
 function restore()
-    admin_token = Store.get("admin.token")
-    timeout_ms = Store.get("admin.timeout_ms")
-    commands = Store.get_json("admin.commands")
+    _U["admin_token"] = Store.get("admin.token")
+    _U["timeout_ms"] = Store.get("admin.timeout_ms")
+    _U["commands"] = Store.get_json("admin.commands")
 end

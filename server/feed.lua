@@ -1,5 +1,8 @@
 package "Feed"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Feed_U", "Feed_U")
 -- 内存事件 feed：fakelua 原生 container.deque（NativeObject）支撑的有界环形缓冲。
 -- 订阅事件总线 game.enter / game.eat / game.feast，保留最近 N 条预编码 JSON，
 -- 经 GET /api/feed 对外查询。与 sqlite 账本的区别：纯内存、无落盘开销、热更不丢
@@ -7,8 +10,6 @@ package "Feed"
 -- 注意：container 序列容器只能存标量/NativeObject，不能存 Lua table，
 -- 因此条目统一存 json.encode 后的字符串。
 
-local dq = nil
-local capacity = nil
 
 function init(cfg)
     if cfg ~= nil and cfg["enabled"] == false then
@@ -21,34 +22,34 @@ function init(cfg)
     cap = math.floor(cap)
     if cap < 1 then cap = 1 end
     if cap > 200 then cap = 200 end
-    capacity = cap
+    _U["capacity"] = cap
 
-    dq = container.deque()
+    _U["dq"] = container.deque()
 
     -- init 只订阅一次；热更后函数按名解析自动命中新版本，无需重复 event.on
     event.on("game.enter", "Feed.on_ev_enter")
     event.on("game.eat", "Feed.on_ev_eat")
     event.on("game.feast", "Feed.on_ev_feast")
 
-    print("[Feed] in-memory event feed ready (capacity=" .. tostring(capacity) .. ")")
+    print("[Feed] in-memory event feed ready (capacity=" .. tostring(_U["capacity"]) .. ")")
 end
 
 function is_ready()
-    return dq ~= nil
+    return _U["dq"] ~= nil
 end
 
 -- 压入一条 JSON 字符串并裁剪到容量上限
 local function push(entry_json)
-    if dq == nil then return end
-    dq:push_back(entry_json)
-    while dq:size() > capacity do
-        dq:pop_front()
+    if _U["dq"] == nil then return end
+    _U["dq"]:push_back(entry_json)
+    while _U["dq"]:size() > _U["capacity"] do
+        _U["dq"]:pop_front()
     end
 end
 
 -- 进场：pid / name / is_bot（0 真人，1 机器人）
 function on_ev_enter(pid, name, is_bot)
-    if dq == nil then return end
+    if _U["dq"] == nil then return end
     local ok, s = pcall(function()
         return json.encode({
             ts = os.time(),
@@ -63,7 +64,7 @@ end
 
 -- 吞噬：只收完全击杀（full），partial 太高频
 function on_ev_eat(eater_id, victim_id, gold, kind)
-    if dq == nil then return end
+    if _U["dq"] == nil then return end
     if kind ~= "full" then return end
     local ok, s = pcall(function()
         return json.encode({
@@ -81,7 +82,7 @@ end
 
 -- 金币雨
 function on_ev_feast(x, y, count)
-    if dq == nil then return end
+    if _U["dq"] == nil then return end
     local ok, s = pcall(function()
         return json.encode({
             ts = os.time(),
@@ -96,7 +97,7 @@ end
 
 -- 查询最近 limit 条（旧→新），返回拼好的 JSON 响应体
 function recent_json(limit)
-    if dq == nil then
+    if _U["dq"] == nil then
         return '{"code":0,"count":0,"capacity":0,"list":[]}'
     end
 
@@ -106,7 +107,7 @@ function recent_json(limit)
     if lim < 1 then lim = 1 end
     if lim > 100 then lim = 100 end
 
-    local all = dq:to_table()
+    local all = _U["dq"]:to_table()
     local total = #all
     local from = 1
     if total > lim then from = total - lim + 1 end
@@ -118,7 +119,7 @@ function recent_json(limit)
     end
     return '{"code":0,"count":' .. tostring(total - from + 1)
         .. ',"total":' .. tostring(total)
-        .. ',"capacity":' .. tostring(capacity)
+        .. ',"capacity":' .. tostring(_U["capacity"])
         .. ',"list":[' .. table.concat(parts, ",") .. "]}"
 end
 
@@ -130,26 +131,26 @@ end
 
 function hotfix_save()
     local s = {}
-    s["dq"] = dq
-    s["capacity"] = capacity
+    s["dq"] = _U["dq"]
+    s["capacity"] = _U["capacity"]
     return s
 end
 
 function hotfix_restore(s)
     if s == nil then return end
-    dq = s["dq"]
-    capacity = s["capacity"]
+    _U["dq"] = s["dq"]
+    _U["capacity"] = s["capacity"]
 end
 
 -- ---- 帧边界持久化 ----
 -- deque 是 NativeObject（C++ 堆），本身不随 arena 消亡，但它在文件级 local 里的
 -- 壳会失效；每帧从 Store 取回即可，条目无需重编码。
 function persist()
-    Store.set("feed.dq", dq)
-    Store.set("feed.capacity", capacity)
+    Store.set("feed.dq", _U["dq"])
+    Store.set("feed.capacity", _U["capacity"])
 end
 
 function restore()
-    dq = Store.get("feed.dq")
-    capacity = Store.get("feed.capacity")
+    _U["dq"] = Store.get("feed.dq")
+    _U["capacity"] = Store.get("feed.capacity")
 end

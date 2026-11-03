@@ -1,13 +1,14 @@
 package "Audit"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Audit_U", "Audit_U")
 -- 管理操作防篡改审计链（fakelua sqlite + crypto.sha256）：
 --   每条记录 hash = sha256(prev_hash | ts | actor | action | target | detail)，
 --   首条以前一条的 hash 为 prev_hash，形成只增哈希链。
 --   任何对 records 表的外部改动（改字段/删行/插行）都会在 Audit.verify() 重放时断裂。
 --   与 Ledger 一样全同步 sqlite，可安全在 HTTP 派发上下文调用；失败仅记录，不阻断管理动作。
 
-local db = nil
-local db_path = nil
 
 local SCHEMA_SQL =
 "CREATE TABLE IF NOT EXISTS records ("
@@ -31,7 +32,7 @@ function init(cfg)
     end
 
     local path = cfg["path"] or "data/audit.db"
-    db_path = path
+    _U["db_path"] = path
 
     local dir = os.dirname(path)
     if dir ~= nil and dir ~= "" and dir ~= "." then
@@ -43,21 +44,21 @@ function init(cfg)
         print("[Audit] sqlite open failed, audit disabled: " .. tostring(res))
         return
     end
-    db = res
+    _U["db"] = res
 
     -- 审计库刻意用 DELETE 回滚日志而非 WAL：
     -- 1) verify() 的价值是察觉【其它进程】（sqlite3 CLI/DBA 工具）对库文件的篡改，
     --    WAL 下长连接持有读快照时外部提交不可见；DELETE 模式每次读都取最新已提交页；
     -- 2) 数据目录可能位于不支持 WAL 共享内存(mmap) 的虚拟共享卷（virtiofs），
     --    多连接会直接 SQLITE_IOERR。审计低频低并发，读写互斥 + busy_timeout 足够。
-    pcall(function() db:exec("PRAGMA journal_mode=DELETE") end)
-    pcall(function() db:exec("PRAGMA busy_timeout=3000") end)
+    pcall(function() _U["db"]:exec("PRAGMA journal_mode=DELETE") end)
+    pcall(function() _U["db"]:exec("PRAGMA busy_timeout=3000") end)
 
-    local ok2, err2 = pcall(function() db:exec(SCHEMA_SQL) end)
+    local ok2, err2 = pcall(function() _U["db"]:exec(SCHEMA_SQL) end)
     if not ok2 then
         print("[Audit] schema init failed, audit disabled: " .. tostring(err2))
-        pcall(function() db:close() end)
-        db = nil
+        pcall(function() _U["db"]:close() end)
+        _U["db"] = nil
         return
     end
 
@@ -65,15 +66,15 @@ function init(cfg)
 end
 
 function is_ready()
-    return db ~= nil
+    return _U["db"] ~= nil
 end
 
 -- 查询用短连接（现开现关）：长连接的读视图会冻结在它自己最近一次写事务的时点，
 -- 看不到外部进程（sqlite3 CLI/DBA 工具）已提交的改动；DELETE 日志模式下短连接
 -- 不依赖共享内存，可在 virtiofs 等虚拟共享卷上正常工作。
 local function open_view()
-    if db_path == nil then return nil end
-    local ok, vdb = pcall(function() return sqlite.open(db_path) end)
+    if _U["db_path"] == nil then return nil end
+    local ok, vdb = pcall(function() return sqlite.open(_U["db_path"]) end)
     if not ok or vdb == nil then return nil end
     pcall(function() vdb:exec("PRAGMA busy_timeout=3000") end)
     return vdb
@@ -95,7 +96,7 @@ end
 -- 追加一条审计。actor 缺省 "admin"；detail 只接受字符串（调用方自行 json.encode）。
 -- 返回 true；未启用/失败静默返回 false，绝不阻断主操作。
 function record(action, target, detail, actor)
-    if db == nil then return false end
+    if _U["db"] == nil then return false end
     if type(action) ~= "string" or action == "" then return false end
     if actor == nil or actor == "" then actor = "admin" end
     if target ~= nil and type(target) ~= "string" then target = tostring(target) end
@@ -110,7 +111,7 @@ function record(action, target, detail, actor)
     local prev = GENESIS
     local rows = nil
     local okq, qerr = pcall(function()
-        return db:exec("SELECT hash FROM records ORDER BY id DESC LIMIT 1")
+        return _U["db"]:exec("SELECT hash FROM records ORDER BY id DESC LIMIT 1")
     end)
     if okq and type(qerr) == "table" and #qerr > 0 and qerr[1]["hash"] ~= nil then
         prev = tostring(qerr[1]["hash"])
@@ -119,7 +120,7 @@ function record(action, target, detail, actor)
     local h = hash_of(prev, ts, actor, action, target, detail)
 
     local ok, err = pcall(function()
-        local stmt = db:prepare(
+        local stmt = _U["db"]:prepare(
             "INSERT INTO records (ts, actor, action, target, detail, prev_hash, hash)"
             .. " VALUES (?, ?, ?, ?, ?, ?, ?)")
         stmt:bind(ts, actor, action, target, detail, prev, h)
@@ -141,7 +142,7 @@ end
 -- 最近记录（新→旧），limit 钳 1..200，默认 20
 function list(limit)
     local out = {}
-    if db == nil then return out end
+    if _U["db"] == nil then return out end
 
     local lim = tonumber(limit)
     if lim == nil or lim ~= lim then lim = 20 end
@@ -177,7 +178,7 @@ end
 -- 从最早记录重放哈希链。
 -- 返回 ok(bool), count(number), broken(string|nil 描述首个断裂点)
 function verify()
-    if db == nil then return false, 0, "audit disabled" end
+    if _U["db"] == nil then return false, 0, "audit disabled" end
 
     local vdb = open_view()
     if vdb == nil then return false, 0, "cannot open audit db for verification" end
@@ -213,25 +214,25 @@ end
 -- db 是 NativeObject，随快照交出挂回新模块 upvalue（同 Feed/Ledger 模式）
 function hotfix_save()
     local s = {}
-    s["db"] = db
-    s["db_path"] = db_path
+    s["db"] = _U["db"]
+    s["db_path"] = _U["db_path"]
     return s
 end
 
 function hotfix_restore(s)
     if s == nil then return end
-    db = s["db"]
-    db_path = s["db_path"]
+    _U["db"] = s["db"]
+    _U["db_path"] = s["db_path"]
 end
 
 -- ---- 帧边界持久化 ----
 -- sqlite 连接是 NativeObject；审计链本身在库里，跨帧只需保住连接与路径。
 function persist()
-    Store.set("audit.db", db)
-    Store.set("audit.db_path", db_path)
+    Store.set("audit.db", _U["db"])
+    Store.set("audit.db_path", _U["db_path"])
 end
 
 function restore()
-    db = Store.get("audit.db")
-    db_path = Store.get("audit.db_path")
+    _U["db"] = Store.get("audit.db")
+    _U["db_path"] = Store.get("audit.db_path")
 end

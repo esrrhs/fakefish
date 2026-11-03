@@ -1,10 +1,9 @@
 package "HttpStatic"
 
-local http_srv = nil
-local web_dir = "web"
-local pbf_ready = nil
-local log_path = nil
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("HttpStatic_U", "HttpStatic_U")
 -- 小于该字节数的响应不做 gzip（压缩收益不抵开销）
 local gzip_min_bytes = 128
 
@@ -155,7 +154,7 @@ function dispatch_request(req)
         }
     end
 
-    local local_file = web_dir .. path
+    local local_file = _U["web_dir"] .. path
     local content = read_file(local_file)
 
     if content ~= nil then
@@ -575,13 +574,13 @@ local function handle_admin_logs(req)
     if n < 1 then n = 1 end
     if n > 500 then n = 500 end
 
-    if log_path == nil then
+    if _U["log_path"] == nil then
         return api_json(503, '{"code":503,"msg":"file logging disabled"}')
     end
 
-    local f = io.open(log_path, "rb")
+    local f = io.open(_U["log_path"], "rb")
     if not f then
-        return api_json(200, json.encode({ code = 0, path = log_path, lines = {} }))
+        return api_json(200, json.encode({ code = 0, path = _U["log_path"], lines = {} }))
     end
     -- 只读尾部 64KB：seek 到末尾拿大小，再回退至多 65536 字节
     local size = tonumber(f:seek("end")) or 0
@@ -603,7 +602,7 @@ local function handle_admin_logs(req)
     for i = from, #all do
         out[#out + 1] = all[i]
     end
-    return api_json(200, json.encode({ code = 0, path = log_path, count = #out, lines = out }))
+    return api_json(200, json.encode({ code = 0, path = _U["log_path"], count = #out, lines = out }))
 end
 
 -- 配置脱敏导出：键名含敏感词的值一律打码
@@ -684,7 +683,7 @@ end
 
 -- protobuf3 二进制世界快照
 local function world_snapshot_pbf()
-    if pbf_ready ~= true then
+    if _U["pbf_ready"] ~= true then
         return api_json(503, '{"code":503,"msg":"protobuf schema not loaded"}')
     end
 
@@ -907,10 +906,10 @@ end
 function init(cfg, log_cfg)
     if cfg == nil then cfg = {} end
     local port = cfg["http_port"] or 8080
-    web_dir = cfg["web_dir"] or "web"
+    _U["web_dir"] = cfg["web_dir"] or "web"
 
     if type(log_cfg) == "table" and log_cfg["enabled"] ~= false then
-        log_path = log_cfg["path"] or "data/logs/server.log"
+        _U["log_path"] = log_cfg["path"] or "data/logs/server.log"
     end
 
     local srv_cfg = {
@@ -924,20 +923,20 @@ function init(cfg, log_cfg)
         return false
     end
 
-    http_srv = srv
-    http_srv:dispatch("HttpStatic.on_request")
+    _U["http_srv"] = srv
+    _U["http_srv"]:dispatch("HttpStatic.on_request")
 
     -- 加载 /api/world.pbf 的 protobuf3 模式（失败不阻断主服务，端点返回 503）
     local ok_pb, pb_res = pcall(function() return protobuf.load(PBF_SCHEMA) end)
     if ok_pb and pb_res == "ok" then
-        pbf_ready = true
+        _U["pbf_ready"] = true
         print("[HttpStatic] protobuf WorldSnapshot schema loaded")
     else
-        pbf_ready = false
+        _U["pbf_ready"] = false
         print("[HttpStatic] WARNING: protobuf schema load failed: " .. tostring(pb_res))
     end
 
-    print("[HttpStatic] HTTP server running on http://127.0.0.1:" .. tostring(port) .. " (serving " .. web_dir .. "/)")
+    print("[HttpStatic] HTTP server running on http://127.0.0.1:" .. tostring(port) .. " (serving " .. _U["web_dir"] .. "/)")
     return true
 end
 
@@ -945,15 +944,15 @@ end
 -- http_srv 是 NativeObject（HTTP 服务句柄 + on_request 派发），每帧取回；
 -- protobuf schema 就绪标记与日志路径是标量。
 function persist()
-    Store.set("http.srv", http_srv)
-    Store.set("http.pbf_ready", pbf_ready)
-    Store.set("http.log_path", log_path)
-    Store.set("http.web_dir", web_dir)
+    Store.set("http.srv", _U["http_srv"])
+    Store.set("http.pbf_ready", _U["pbf_ready"])
+    Store.set("http.log_path", _U["log_path"])
+    Store.set("http.web_dir", _U["web_dir"])
 end
 
 function restore()
-    http_srv = Store.get("http.srv")
-    pbf_ready = Store.get("http.pbf_ready")
-    log_path = Store.get("http.log_path")
-    web_dir = Store.get("http.web_dir")
+    _U["http_srv"] = Store.get("http.srv")
+    _U["pbf_ready"] = Store.get("http.pbf_ready")
+    _U["log_path"] = Store.get("http.log_path")
+    _U["web_dir"] = Store.get("http.web_dir")
 end

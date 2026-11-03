@@ -1,5 +1,8 @@
 package "HotReload"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("HotReload_U", "HotReload_U")
 -- 热更（hotfix）编排模块
 --
 -- 原理：fakelua 的跨包调用在运行时按函数名查找（FakeluaCallByName），
@@ -27,11 +30,6 @@ local registry = {
     { name = "backup", file = "server/backup.lua", stateful = true  }
 }
 
-local admin_token = nil       -- hotfix 鉴权 token（config: server.hotfix_token）
-local watch_enable = nil     -- 文件变更自动热更（config: server.hotfix_watch）
-local pending = nil          -- 回调入队的 hotfix 请求，init() 中创建（必须为运行时 table）
-local watch_snapshots = nil  -- name -> 上次文件内容
-local frame_count = nil
 
 -- 按名字查注册表项
 local function find_entry(name)
@@ -84,31 +82,31 @@ local function restore_for(name, snap)
 end
 
 function init(cfg)
-    pending = {}
-    frame_count = 0
+    _U["pending"] = {}
+    _U["frame_count"] = 0
     if cfg == nil then cfg = {} end
-    admin_token = cfg["hotfix_token"]
-    watch_enable = cfg["hotfix_watch"]
-    if watch_enable == nil then watch_enable = false end
+    _U["admin_token"] = cfg["hotfix_token"]
+    _U["watch_enable"] = cfg["hotfix_watch"]
+    if _U["watch_enable"] == nil then _U["watch_enable"] = false end
 
-    watch_snapshots = {}
-    if watch_enable then
+    _U["watch_snapshots"] = {}
+    if _U["watch_enable"] then
         for i = 1, #registry do
-            watch_snapshots[registry[i].name] = read_file(registry[i].file)
+            _U["watch_snapshots"][registry[i].name] = read_file(registry[i].file)
         end
     end
 
-    if admin_token == nil then
+    if _U["admin_token"] == nil then
         print("[HotReload] hotfix_token not configured: all hotfix requests will be rejected")
     else
-        print("[HotReload] Hotfix channel enabled (watch=" .. tostring(watch_enable) .. ")")
+        print("[HotReload] Hotfix channel enabled (watch=" .. tostring(_U["watch_enable"]) .. ")")
     end
 end
 
 -- 鉴权：未配置 token 时一律拒绝（安全默认）
 function check_token(token)
-    if admin_token == nil or token == nil then return false end
-    return token == admin_token
+    if _U["admin_token"] == nil or token == nil then return false end
+    return token == _U["admin_token"]
 end
 
 -- WS 回调入口：仅做入队（不在 C++ 受限上下文中编译）
@@ -132,7 +130,7 @@ function request(connid, names)
             end
         end
     end
-    table.insert(pending, { connid = connid, modules = list })
+    table.insert(_U["pending"], { connid = connid, modules = list })
 end
 
 -- 展开实际要 touch 的模块：加入 companions，按 registry 顺序去重
@@ -237,10 +235,10 @@ end
 
 -- 主循环每帧调用：drain hotfix 请求并执行；watch 模式下每秒检查文件变更
 function process()
-    frame_count = frame_count + 1
+    _U["frame_count"] = _U["frame_count"] + 1
 
-    local reqs = pending
-    pending = {}
+    local reqs = _U["pending"]
+    _U["pending"] = {}
     local req_count = #reqs
     for i = 1, req_count do
         local req = reqs[i]
@@ -263,13 +261,13 @@ function process()
         World.enqueue_response(req.connid, { type = "hotfix_result", results = results })
     end
 
-    if watch_enable and frame_count % 20 == 0 then
+    if _U["watch_enable"] and _U["frame_count"] % 20 == 0 then
         local changed = {}
         for i = 1, #registry do
             local name = registry[i].name
             local cur = read_file(registry[i].file)
-            if cur ~= nil and cur ~= watch_snapshots[name] then
-                watch_snapshots[name] = cur
+            if cur ~= nil and cur ~= _U["watch_snapshots"][name] then
+                _U["watch_snapshots"][name] = cur
                 table.insert(changed, name)
             end
         end
@@ -293,19 +291,19 @@ end
 -- ---- 帧边界持久化 ----
 -- pending 是回调入队的热更请求（数组），watch_snapshots 是「模块名 -> 文件内容」。
 function persist()
-    Store.set("hotreload.token", admin_token)
-    Store.set("hotreload.watch_enable", watch_enable)
-    Store.set("hotreload.frame_count", frame_count)
-    Store.set_json("hotreload.pending", pending)
-    Store.set_json("hotreload.watch_snapshots", watch_snapshots)
+    Store.set("hotreload.token", _U["admin_token"])
+    Store.set("hotreload.watch_enable", _U["watch_enable"])
+    Store.set("hotreload.frame_count", _U["frame_count"])
+    Store.set_json("hotreload.pending", _U["pending"])
+    Store.set_json("hotreload.watch_snapshots", _U["watch_snapshots"])
 end
 
 function restore()
-    admin_token = Store.get("hotreload.token")
-    watch_enable = Store.get("hotreload.watch_enable")
-    frame_count = Store.get("hotreload.frame_count")
-    pending = Store.get_json("hotreload.pending")
-    if pending == nil then pending = {} end
-    watch_snapshots = Store.get_json("hotreload.watch_snapshots")
-    if watch_snapshots == nil then watch_snapshots = {} end
+    _U["admin_token"] = Store.get("hotreload.token")
+    _U["watch_enable"] = Store.get("hotreload.watch_enable")
+    _U["frame_count"] = Store.get("hotreload.frame_count")
+    _U["pending"] = Store.get_json("hotreload.pending")
+    if _U["pending"] == nil then _U["pending"] = {} end
+    _U["watch_snapshots"] = Store.get_json("hotreload.watch_snapshots")
+    if _U["watch_snapshots"] == nil then _U["watch_snapshots"] = {} end
 end

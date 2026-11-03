@@ -1,12 +1,13 @@
 package "Ledger"
 
+
+-- Mutable module state on NativeObject (file-level locals are const bindings).
+local _U = new_global_obj("Ledger_U", "Ledger_U")
 -- SQLite 事件流水账本：进场(enter) / 完全击杀(kill) / 金币雨(feast)。
 -- sqlite 模块全部同步操作，可安全用于 WS recv 回调上下文（game.enter 在该上下文 emit）。
 -- db / stmt 为 NativeObject（userdata），存文件级 upvalue 不受 const 限制；
 -- 热更只替换函数地址，预处理语句对象依然有效。
 
-local db = nil
-local insert_stmt = nil
 -- 就绪判据是 db/insert_stmt 是否非 nil（见 is_ready()），两者都是 NativeObject 已入库；
 -- 不要再引入一个文件级「就绪标记」：它是 init 帧写入的运行期值，跨帧即失效。
 
@@ -43,31 +44,31 @@ function init(cfg)
         print("[Ledger] sqlite open failed, ledger disabled: " .. tostring(res))
         return
     end
-    db = res
+    _U["db"] = res
 
     -- WAL：允许多实例（如 test_persist 拉起的第二个服务器）并发读写同一账本；
     -- busy_timeout 让写锁竞争时等待而不是立刻报 database is locked
-    pcall(function() db:exec("PRAGMA journal_mode=WAL") end)
-    pcall(function() db:exec("PRAGMA busy_timeout=3000") end)
+    pcall(function() _U["db"]:exec("PRAGMA journal_mode=WAL") end)
+    pcall(function() _U["db"]:exec("PRAGMA busy_timeout=3000") end)
 
-    local ok2, err2 = pcall(function() db:exec(SCHEMA_SQL) end)
+    local ok2, err2 = pcall(function() _U["db"]:exec(SCHEMA_SQL) end)
     if not ok2 then
         print("[Ledger] schema init failed, ledger disabled: " .. tostring(err2))
-        pcall(function() db:close() end)
-        db = nil
+        pcall(function() _U["db"]:close() end)
+        _U["db"] = nil
         return
     end
 
     local ok3, stmt = pcall(function()
-        return db:prepare("INSERT INTO events (ts, type, player_id, name, detail) VALUES (?, ?, ?, ?, ?)")
+        return _U["db"]:prepare("INSERT INTO events (ts, type, player_id, name, detail) VALUES (?, ?, ?, ?, ?)")
     end)
     if not ok3 or stmt == nil then
         print("[Ledger] prepare insert failed, ledger disabled: " .. tostring(stmt))
-        pcall(function() db:close() end)
-        db = nil
+        pcall(function() _U["db"]:close() end)
+        _U["db"] = nil
         return
     end
-    insert_stmt = stmt
+    _U["insert_stmt"] = stmt
 
     -- 事件总线订阅（init 一次；函数热更后按名解析自动命中新版）
     event.on("game.enter", "Ledger.on_ev_enter")
@@ -78,16 +79,16 @@ function init(cfg)
 end
 
 function is_ready()
-    return db ~= nil and insert_stmt ~= nil
+    return _U["db"] ~= nil and _U["insert_stmt"] ~= nil
 end
 
 -- 通用落账（event 处理器共用）。同步写入；失败仅打印，不影响游戏主链路。
 local function record(ev_type, player_id, name, detail)
     if not is_ready() then return end
     local ok, err = pcall(function()
-        insert_stmt:bind(os.time(), ev_type, player_id, name, detail)
-        insert_stmt:step()
-        insert_stmt:reset()
+        _U["insert_stmt"]:bind(os.time(), ev_type, player_id, name, detail)
+        _U["insert_stmt"]:step()
+        _U["insert_stmt"]:reset()
     end)
     if not ok then
         print("[Ledger] insert failed: " .. tostring(err))
@@ -153,7 +154,7 @@ function query_events(limit, kind)
               .. " ORDER BY id DESC LIMIT " .. tostring(lim)
     end
 
-    local ok, rows = pcall(function() return db:exec(sql) end)
+    local ok, rows = pcall(function() return _U["db"]:exec(sql) end)
     if not ok or rows == nil then return out end
 
     -- db:exec 的 SELECT 结果：每行按列名索引（stmt:step 同款）
@@ -174,11 +175,11 @@ end
 -- ---- 帧边界持久化 ----
 -- sqlite 连接与预编译语句都是 NativeObject，每帧取回即可（连接状态在 C++ 侧）。
 function persist()
-    Store.set("ledger.db", db)
-    Store.set("ledger.stmt", insert_stmt)
+    Store.set("ledger.db", _U["db"])
+    Store.set("ledger.stmt", _U["insert_stmt"])
 end
 
 function restore()
-    db = Store.get("ledger.db")
-    insert_stmt = Store.get("ledger.stmt")
+    _U["db"] = Store.get("ledger.db")
+    _U["insert_stmt"] = Store.get("ledger.stmt")
 end
